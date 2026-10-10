@@ -94,7 +94,7 @@ function SignupPageInner() {
     // sign in again after verifying. /auth/callback exchanges the link
     // for a session and forwards to `next` (issue #592). Supabase still
     // has to allow this origin under Authentication → URL Configuration
-    // → Redirect URLs; see docs/auth-emails.md.
+    // → Redirect URLs.
     const next = inviteToken
       ? `/join/${encodeURIComponent(inviteToken)}`
       : "/dashboard";

@@ -123,7 +123,7 @@ import { useTranslations } from "next-intl";
 // Storage key for the desktop collapse preference. Read by the boot
 // script in src/app/layout.tsx (before paint) and written here on
 // toggle; the actual styling is CSS keyed off <html data-sidebar-collapsed>.
-const SIDEBAR_COLLAPSED_STORAGE_KEY = "wacrm:sidebar-collapsed";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "ashwini:sidebar-collapsed";
 
 export function Sidebar({ open = false, onClose }: SidebarProps) {
   const t = useTranslations("Sidebar");

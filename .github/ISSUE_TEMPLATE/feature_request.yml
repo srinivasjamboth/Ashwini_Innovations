@@ -22,8 +22,7 @@ body:
           than a bet on your specific workflow.
 
         If the feature is really for your own deployment, fork and
-        build it there — see
-        [CONTRIBUTING.md](https://github.com/ArnasDon/wacrm/blob/main/CONTRIBUTING.md).
+        build it there.
 
   - type: textarea
     id: problem

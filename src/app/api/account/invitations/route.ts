@@ -46,9 +46,8 @@ import {
 //      operator to set an env var.
 //   3. `Host` header + the protocol the request arrived on —
 //      bare deployments without a proxy.
-//   4. Last-resort marketing-site fallback. Only hit if the
-//      request has no Host header at all, which is essentially
-//      impossible from a real browser. Logs a warning so the
+//   4. Otherwise the request fails loudly — no link is emitted
+//      with an unverifiable domain. Logs a warning so the
 //      operator can spot the misconfig.
 //
 // Defense-in-depth: `ALLOWED_INVITE_HOSTS`
@@ -63,16 +62,10 @@ import {
 //
 //   When `ALLOWED_INVITE_HOSTS` is set (comma-separated hostnames),
 //   we validate the derived host against the list. Anything not
-//   on the list falls through to the wacrm.tech fallback with a
-//   loud console.warn. Operators who care about this attack
-//   surface should set this to their canonical hostnames; everyone
-//   else gets today's permissive behavior.
-//
-// Previous implementation hard-defaulted to `https://wacrm.tech`
-// (the docs/marketing site, a different repo). Forks that didn't
-// set `NEXT_PUBLIC_SITE_URL` got invite links pointing at the
-// marketing site, which 404s on `/join/<token>`. This resolution
-// chain removes the foot-gun.
+//   on the list is rejected with a loud console.warn and the
+//   request fails. Operators who care about this attack surface
+//   should set this to their canonical hostnames; everyone else
+//   gets today's permissive behavior.
 function parseAllowedHosts(): readonly string[] | null {
   const raw = process.env.ALLOWED_INVITE_HOSTS?.trim();
   if (!raw) return null;
@@ -119,8 +112,10 @@ function getBaseUrl(request: Request): string {
   // We fall through here when EITHER no Host header was present at
   // all (essentially impossible from a real browser) OR an
   // ALLOWED_INVITE_HOSTS list was set and neither candidate matched
-  // it. The warning is the operator's signal that someone is
-  // probing the API with a spoofed Host header.
+  // it. Refusing to build a link beats emitting one that points at
+  // a wrong or attacker-chosen domain; the warning is the
+  // operator's signal that someone is probing the API with a
+  // spoofed Host header.
   if (allowList && (forwardedHost || host)) {
     console.warn(
       "[POST /api/account/invitations] rejected non-allow-listed host:",
@@ -128,10 +123,12 @@ function getBaseUrl(request: Request): string {
     );
   } else {
     console.warn(
-      "[POST /api/account/invitations] could not derive base URL from request; falling back to marketing domain",
+      "[POST /api/account/invitations] could not derive base URL from request",
     );
   }
-  return "https://wacrm.tech";
+  throw new Error(
+    "Could not derive a base URL for the invite link. Set NEXT_PUBLIC_SITE_URL (or ALLOWED_INVITE_HOSTS) to your canonical hostname.",
+  );
 }
 
 const MAX_LABEL_LEN = 80;
@@ -215,6 +212,9 @@ export async function POST(request: Request) {
     }
 
     const { token, hash } = generateInviteToken();
+    // Resolve the base URL before inserting so a misconfigured
+    // deployment can't leave an orphaned invitation row behind.
+    const baseUrl = getBaseUrl(request);
 
     const { data, error } = await ctx.supabase
       .from("account_invitations")
@@ -242,7 +242,7 @@ export async function POST(request: Request) {
         invitation: data,
         // Plaintext payload — visible to the admin exactly once.
         token,
-        url: inviteUrl(token, getBaseUrl(request)),
+        url: inviteUrl(token, baseUrl),
         expiresInDays: expiryDays,
       },
       { status: 201 },

@@ -89,7 +89,7 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
       new Notification(t('testTitle'), {
         body: t('testBody'),
         icon: '/logo.jpeg',
-        tag: 'wacrm-test-notification',
+        tag: 'ashwini-test-notification',
       });
     } catch {
       toast.error(t('unsupported'));

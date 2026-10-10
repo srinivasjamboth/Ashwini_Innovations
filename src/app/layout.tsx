@@ -79,7 +79,7 @@ const THEME_BOOT_SCRIPT = `
     // width/label rules live in globals.css, keyed off this attribute,
     // which keeps React out of the initial-render path (no hydration
     // mismatch): the component only reads/writes this flag on click.
-    var SIDEBAR_KEY = "wacrm:sidebar-collapsed";
+    var SIDEBAR_KEY = "ashwini:sidebar-collapsed";
     d.dataset.sidebarCollapsed =
       localStorage.getItem(SIDEBAR_KEY) === "true" ? "true" : "false";
   } catch (_e) {

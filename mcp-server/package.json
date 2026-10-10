@@ -1,20 +1,12 @@
 {
-  "name": "wacrm-mcp",
+  "name": "ashwini-mcp",
   "version": "0.1.1",
-  "mcpName": "io.github.ArnasDon/wacrm-mcp",
-  "description": "Model Context Protocol (MCP) server for wacrm — drive your self-hosted WhatsApp CRM from Claude, Cursor, and other MCP clients.",
-  "license": "MIT",
-  "author": "Arnas Donauskas",
-  "homepage": "https://github.com/ArnasDon/wacrm",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ArnasDon/wacrm.git",
-    "directory": "mcp-server"
-  },
+  "description": "Model Context Protocol (MCP) server for Ashwini — drive your self-hosted WhatsApp CRM from Claude, Cursor, and other MCP clients.",
+  "license": "UNLICENSED",
   "keywords": [
     "mcp",
     "model-context-protocol",
-    "wacrm",
+    "ashwini",
     "whatsapp",
     "crm",
     "claude",
@@ -25,11 +17,10 @@
     "node": ">=20.0.0"
   },
   "bin": {
-    "wacrm-mcp": "./dist/index.js"
+    "ashwini-mcp": "./dist/index.js"
   },
   "files": [
-    "dist",
-    "README.md"
+    "dist"
   ],
   "scripts": {
     "build": "tsc",

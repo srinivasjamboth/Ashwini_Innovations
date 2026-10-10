@@ -7,7 +7,7 @@
 // it from the inbound webhook's `after()` block, where a failed
 // delivery must not affect the 200 OK returned to Meta.
 //
-// Delivery semantics (documented in docs/public-api.md):
+// Delivery semantics:
 //   - At-most-once per event, single attempt with a short timeout.
 //   - Each consecutive failure bumps `failure_count`; once it crosses
 //     MAX_CONSECUTIVE_FAILURES the endpoint is auto-disabled

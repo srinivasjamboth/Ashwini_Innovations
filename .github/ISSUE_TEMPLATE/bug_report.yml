@@ -9,9 +9,8 @@ body:
         Thanks for reporting! The more specific you can be, the faster we
         can land a fix.
 
-        **Not a bug in the code?** If this is a security issue, close this
-        form and follow [SECURITY.md](https://github.com/ArnasDon/wacrm/blob/main/.github/SECURITY.md)
-        instead.
+        **Not a bug in the code?** If this is a security issue, please
+        report it privately rather than opening a public issue.
 
   - type: textarea
     id: summary

@@ -1,18 +1,9 @@
 {
-  "name": "wacrm",
+  "name": "ashwini-crm",
   "version": "0.8.0",
   "private": true,
   "description": "Self-hostable CRM template for WhatsApp built on Next.js and Supabase — shared inbox, contacts, sales pipelines, broadcasts, and no-code automations.",
-  "license": "MIT",
-  "author": "Arnas Donauskas",
-  "homepage": "https://github.com/ArnasDon/wacrm",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ArnasDon/wacrm.git"
-  },
-  "bugs": {
-    "url": "https://github.com/ArnasDon/wacrm/issues"
-  },
+  "license": "UNLICENSED",
   "keywords": [
     "crm",
     "whatsapp",
