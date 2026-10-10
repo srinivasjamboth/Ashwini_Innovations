@@ -1,0 +1,844 @@
+/********** Template CSS — adapted for Ashwini Innovations **********
+
+   This is the stylesheet that ships with the landing page template
+   (css/style.css), kept rule-for-rule so the layout, spacing,
+   animations and icon treatment stay exactly as designed. Three
+   things were changed, all of them colour or plumbing:
+
+   1. PALETTE — the template ran every accent off
+      `--secondary: #8F12FD` (a purple) against `--primary: #4294E3`.
+      Both stops are now blue, so the gradients the theme builds from
+      them (buttons, icon chips, nav pills, carousel dots, footer,
+      back-to-top) come out blue with no per-component edits. The big
+      surfaces are dark blue — near-black navy into brand blue — and the
+      page between them is white. All colours are declared once, in
+      :root below.
+   2. HERO + NAV TEXT — white, on the dark blue. The navbar is
+      transparent above the hero and turns white once it sticks, so the
+      link/brand colours swap in `.sticky-top` rules, and the CTAs on the
+      dark bands use the inverted white pills (.btn-on-dark) instead of
+      the blue gradient ones. Measured AA+ on every stop the copy can
+      land on: #FFFFFF is 16.4:1 on #071F35, 11.5:1 on #0B3F6D, 7.2:1 on
+      #165A96; on the white sections the headings are #0B2A4A (14.5:1)
+      and the body copy #25415F (10.5:1).
+   3. PLUMBING — image URLs point at /landing/img (the assets were
+      copied into public/), jQuery-only behaviours that used to live in
+      js/main.js got the CSS hooks the React components drive
+      (.back-to-top.show, the .wow visibility pair below, .owl-item), and
+      the Jost/Heebo web fonts and the two CDN icon fonts are gone in
+      favour of the app's own Inter setup and bundled SVG glyphs.
+
+   Loaded after Bootstrap, so the small override block at the bottom
+   wins where Bootstrap was compiled with the old blue baked in. */
+
+:root {
+    /* ------------------------------------------------------------
+       Brand palette — the ONE place these values exist.
+       ------------------------------------------------------------ */
+    --primary: #1d6fb8; /* solid blue, white label = 5.2:1 (AA) */
+    --secondary: #165a96; /* hover / second gradient stop, 7.2:1 */
+    --light: #eaf4ff; /* very light blue */
+    --light-2: #cfe3fa; /* soft blue */
+    --mid: #8fbce6; /* lightest stop the big gradients reach */
+    --deep: #0b3f6d; /* dark blue */
+    --ink: #071f35; /* darkest blue, the head of every big gradient */
+    --dark: #0b2a4a; /* headings + dark text on light surfaces */
+    --body: #25415f; /* body copy */
+    --muted: #48658a; /* eyebrows, meta (4.6:1 on --light-2) */
+    --border-soft: #d7e7f7;
+
+    /* Dark blue, top to bottom, handing over to white at the foot
+       through the template's own white wave PNG. The whole band stays
+       dark on purpose: the headline, the paragraph and the two buttons
+       sit at different heights depending on the viewport, so no copy may
+       ever land on a pale stop. White measures 16.4:1 on #071F35,
+       11.5:1 on #0B3F6D and 7.2:1 on #165A96 — AA+ everywhere. */
+    --gradient-hero: linear-gradient(
+        160deg,
+        var(--ink) 0%,
+        var(--deep) 45%,
+        var(--secondary) 100%
+    );
+    --gradient-blue: linear-gradient(to bottom right, var(--primary), var(--secondary));
+    /* Same dark range, used where a band needs white copy end to end. */
+    --gradient-deep: linear-gradient(140deg, var(--ink) 0%, var(--deep) 45%, var(--secondary) 100%);
+    /* One light gradient for the pale surfaces (card washes, the white
+       half of the page) so those never drift grey. */
+    --gradient-light: linear-gradient(160deg, #FFFFFF 0%, var(--light) 100%);
+
+    /* Bootstrap 5 was compiled with the template's old palette baked into
+       its utilities — .bg-primary/#4294E3, .bg-secondary and .text-secondary
+       #8F12FD (purple), .bg-light #F0F6FF. The custom properties below are
+       what those utilities read at runtime, so re-declaring them here keeps
+       every Bootstrap class on the blue scale too; no purple can reach the
+       page even through a class this stylesheet never mentions. */
+    --bs-primary: var(--primary);
+    --bs-primary-rgb: 29, 111, 184;
+    --bs-secondary: var(--secondary);
+    --bs-secondary-rgb: 22, 90, 150;
+    --bs-light: var(--light);
+    --bs-light-rgb: 234, 244, 255;
+    --bs-dark: var(--dark);
+    --bs-dark-rgb: 11, 42, 74;
+
+    /* Sticky navbar height — in-page anchors stop below it instead of
+       underneath it (js/main.js did the same thing with a -45 offset). */
+    --header-offset: 76px;
+}
+
+
+/*** Spinner ***/
+#spinner {
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity .5s ease-out, visibility 0s linear .5s;
+    z-index: 99999;
+}
+
+#spinner.show {
+    transition: opacity .5s ease-out, visibility 0s linear 0s;
+    visibility: visible;
+    opacity: 1;
+}
+
+
+/*** Heading ***/
+h1,
+h2,
+.fw-bold {
+    font-weight: 700 !important;
+}
+
+h3,
+h4,
+.fw-semi-bold {
+    font-weight: 600 !important;
+}
+
+h5,
+h6,
+.fw-medium {
+    font-weight: 500 !important;
+}
+
+
+/*** Gradient Text & BG ***/
+.text-primary-gradient {
+    background: linear-gradient(to bottom right, var(--primary), var(--secondary));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.text-secondary-gradient {
+    background: linear-gradient(to bottom right, var(--secondary), var(--primary));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.bg-primary-gradient {
+    background: linear-gradient(to bottom right, var(--primary), var(--secondary));
+}
+
+.bg-secondary-gradient {
+    background: linear-gradient(to bottom right, var(--secondary), var(--primary));
+}
+
+
+/*** Button ***/
+.btn {
+    transition: .5s;
+}
+
+.btn.btn-primary-gradient,
+.btn.btn-secondary-gradient {
+    position: relative;
+    overflow: hidden;
+    border: none;
+    color: #FFFFFF;
+    z-index: 1;
+}
+
+.btn.btn-primary-gradient::after,
+.btn.btn-secondary-gradient::after {
+    position: absolute;
+    content: "";
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    transition: .5s;
+    z-index: -1;
+    opacity: 0;
+}
+
+.btn.btn-primary-gradient,
+.btn.btn-secondary-gradient::after {
+    background: linear-gradient(to bottom right, var(--primary), var(--secondary));
+}
+
+.btn.btn-secondary-gradient,
+.btn.btn-primary-gradient::after {
+    background: linear-gradient(to bottom right, var(--secondary), var(--primary));
+}
+
+.btn.btn-primary-gradient:hover::after,
+.btn.btn-secondary-gradient:hover::after {
+    opacity: 1;
+}
+
+/* Outline variant for a secondary CTA on a light surface. Same shape as
+   the theme's pill buttons. */
+.btn.btn-outline-blue {
+    background: #FFFFFF;
+    border: 1px solid var(--primary);
+    color: var(--primary);
+}
+
+.btn.btn-outline-blue:hover {
+    background: var(--light);
+    color: var(--secondary);
+    border-color: var(--secondary);
+}
+
+/* The pair for CTAs that sit on the dark blue bands (hero, closing band,
+   navbar while it is transparent). A blue-gradient pill would vanish into
+   those, so the primary inverts to a solid white pill with navy text and
+   the secondary becomes a white outline. */
+.btn.btn-on-dark {
+    background: #FFFFFF;
+    border: 1px solid #FFFFFF;
+    color: var(--deep);
+}
+
+.btn.btn-on-dark:hover {
+    background: var(--light);
+    border-color: var(--light);
+    color: var(--secondary);
+}
+
+.btn.btn-on-dark-outline {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, .6);
+    color: #FFFFFF;
+}
+
+.btn.btn-on-dark-outline:hover {
+    background: #FFFFFF;
+    border-color: #FFFFFF;
+    color: var(--deep);
+}
+
+.btn-square {
+    width: 38px;
+    height: 38px;
+}
+
+.btn-sm-square {
+    width: 32px;
+    height: 32px;
+}
+
+.btn-lg-square {
+    width: 48px;
+    height: 48px;
+}
+
+.btn-square,
+.btn-sm-square,
+.btn-lg-square {
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: normal;
+    border-radius: 50px;
+}
+
+.back-to-top {
+    position: fixed;
+    display: none;
+    right: 45px;
+    bottom: 45px;
+    z-index: 99;
+    border: none;
+    background: linear-gradient(to bottom right, var(--primary), var(--secondary));
+}
+
+/* js/main.js used jQuery fadeIn/fadeOut here; the header component
+   toggles the class instead. */
+.back-to-top.show {
+    display: flex;
+    opacity: 1;
+    transition: opacity .5s ease;
+}
+
+
+/*** Navbar ***/
+.navbar-light .navbar-nav .nav-link {
+    position: relative;
+    margin-right: 25px;
+    padding: 45px 0;
+    font-size: 18px;
+    font-weight: 500;
+    /* Above 992px the bar is transparent and sits on the dark head of the
+       hero, so the links are the template's own near-white; the
+       .sticky-top rules below flip them to navy once the bar turns white. */
+    color: var(--light) !important;
+    outline: none;
+    transition: .5s;
+}
+
+.navbar-light .navbar-nav .nav-link::before {
+    position: absolute;
+    content: "";
+    width: 0;
+    height: 0;
+    top: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 10px solid;
+    border-color: var(--primary) transparent transparent transparent;
+    transition: .5s;
+}
+
+.sticky-top.navbar-light .navbar-nav .nav-link {
+    padding: 20px 0;
+    color: var(--dark) !important;
+}
+
+.navbar-light .navbar-nav .nav-link:hover::before,
+.navbar-light .navbar-nav .nav-link.active::before {
+    top: 0;
+}
+
+.navbar-light .navbar-brand h1 {
+    color: #FFFFFF;
+}
+
+/* Hover/active marker stays the brand blue on both surfaces. */
+.navbar-light .navbar-nav .nav-link:hover,
+.navbar-light .navbar-nav .nav-link.active {
+    color: #FFFFFF !important;
+}
+
+.sticky-top.navbar-light .navbar-nav .nav-link:hover,
+.sticky-top.navbar-light .navbar-nav .nav-link.active {
+    color: var(--primary) !important;
+}
+
+.navbar-light .navbar-brand img {
+    max-height: 60px;
+    transition: .5s;
+}
+
+.sticky-top.navbar-light .navbar-brand img {
+    max-height: 45px;
+}
+
+/* The bar never collapses: `navbar-expand` (no breakpoint infix) keeps
+   Home / Features / Pricing and both buttons in the horizontal row at
+   every width, and there is no toggler in the markup at all. Below 992px
+   the bar is in normal flow rather than absolute over the hero, so it
+   paints its own dark ground (the hero's head colour, which makes the two
+   read as one surface and keeps the white wordmark and links legible),
+   wraps onto a second line instead of overflowing, and tightens its type. */
+@media (max-width: 991.98px) {
+    .navbar-light {
+        flex-wrap: wrap;
+        row-gap: .25rem;
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+        background: var(--ink);
+    }
+
+    .sticky-top.navbar-light {
+        position: relative;
+        background: #FFFFFF;
+    }
+
+    .navbar-light .navbar-collapse {
+        flex-wrap: wrap;
+        gap: .25rem 0;
+    }
+
+    .navbar-light .navbar-nav .nav-link {
+        padding: 8px 0;
+        margin-right: 18px;
+        font-size: 16px;
+    }
+
+    .navbar-light .navbar-nav .nav-link::before {
+        display: none;
+    }
+
+    .navbar-light .navbar-brand img {
+        max-height: 45px;
+    }
+
+    .navbar-light .btn {
+        padding: .35rem .9rem;
+        font-size: .9rem;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .navbar-light .navbar-nav {
+        width: 100%;
+    }
+
+    .navbar-light .navbar-nav .nav-link {
+        margin-right: 14px;
+        font-size: 15px;
+    }
+}
+
+@media (min-width: 992px) {
+    .navbar-light {
+        position: absolute;
+        width: 100%;
+        top: 0;
+        left: 0;
+        z-index: 999;
+    }
+
+    .sticky-top.navbar-light {
+        position: fixed;
+        background: #FFFFFF;
+    }
+
+    .sticky-top.navbar-light .navbar-nav .nav-link::before {
+        border-top-color: var(--primary);
+    }
+
+    .sticky-top.navbar-light .navbar-brand h1 {
+        background: linear-gradient(to bottom right, var(--primary), var(--secondary));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+}
+
+
+/*** Hero Header ***/
+.hero-header {
+    margin-bottom: 6rem;
+    padding: 16rem 0 0 0;
+    background:
+        url(/landing/img/bg-circle.png),
+        url(/landing/img/bg-triangle.png),
+        url(/landing/img/bg-bottom.png),
+        var(--gradient-hero);
+    background-position:
+        left 0px top 0px,
+        right 0px top 50%,
+        center bottom;
+    background-repeat: no-repeat;
+}
+
+/* The band is dark blue, so the hero copy is white — 16.4:1 at the head
+   of the gradient, never below 7.2:1 anywhere the text can land. */
+.hero-header .hero-title {
+    color: #FFFFFF;
+}
+
+.hero-header .hero-lead {
+    color: var(--light);
+}
+
+@media (max-width: 991.98px) {
+    .hero-header {
+        padding: 6rem 0 9rem 0;
+    }
+}
+
+
+/*** Section anchors ***/
+.anchor {
+    scroll-margin-top: var(--header-offset);
+}
+
+
+/*** Feature ***/
+.feature-item {
+    transition: .5s;
+}
+
+.feature-item:hover {
+    margin-top: -15px;
+    box-shadow: 0 .5rem 1.5rem rgba(0, 0, 0, .08);
+}
+
+
+/*** Pricing ***/
+.pricing .nav {
+    padding: 2px;
+}
+
+.pricing .nav-link {
+    padding: 12px 30px;
+    font-weight: 500;
+    color: var(--dark);
+    background: #FFFFFF;
+}
+
+.pricing .nav-item:first-child .nav-link {
+    border-radius: 30px 0 0 30px;
+}
+
+.pricing .nav-item:last-child .nav-link {
+    border-radius: 0 30px 30px 0;
+}
+
+.pricing .nav-link.active {
+    color: #FFFFFF;
+    background: linear-gradient(to bottom right, var(--primary), var(--secondary));
+}
+
+
+/*** Screenshot ***/
+/* One scale factor drives the whole mockup. The template drew it at
+   253x500 with a 15px bezel; at that size the screens inside are hard to
+   read, so it is 15% larger everywhere and back to the template's own
+   size in the 992-1199px range, where a col-lg-4 is only ~264px wide and
+   the bigger frame would push the page into a horizontal scrollbar. */
+.screenshot-carousel {
+    --shot-scale: 1.15;
+    --frame-w: calc(253px * var(--shot-scale));
+    --frame-h: calc(500px * var(--shot-scale));
+    --shot-w: calc(223px * var(--shot-scale));
+    --shot-h: calc(470px * var(--shot-scale));
+    position: relative;
+    width: var(--frame-w);
+    height: var(--frame-h);
+    padding: calc(15px * var(--shot-scale));
+    margin-right: calc(30px * var(--shot-scale));
+}
+
+@media (min-width: 992px) and (max-width: 1199.98px) {
+    .screenshot-carousel {
+        --shot-scale: 1;
+    }
+}
+
+.screenshot-carousel::before {
+    position: absolute;
+    content: "";
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    background: url(/landing/img/screenshot-frame.png) center center no-repeat;
+    background-size: var(--frame-w) var(--frame-h);
+    z-index: 1;
+}
+
+/* Owl Carousel used to drive the stage from jQuery. The React
+   component renders the same markup and only one slide is active, so
+   the stage is a plain positioned box with cross-fading items. */
+.screenshot-carousel .owl-stage {
+    position: relative;
+    width: var(--shot-w);
+    height: var(--shot-h);
+}
+
+.screenshot-carousel .owl-item {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    transition: opacity .8s ease;
+}
+
+.screenshot-carousel .owl-item.active {
+    opacity: 1;
+}
+
+.screenshot-carousel .owl-item img {
+    position: relative;
+    width: var(--shot-w);
+    height: var(--shot-h);
+    object-fit: cover;
+}
+
+.screenshot-carousel .owl-dots {
+    position: absolute;
+    top: 50%;
+    right: calc(-30px * var(--shot-scale));
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.screenshot-carousel .owl-dot {
+    position: relative;
+    display: inline-block;
+    margin: 5px 0;
+    width: 15px;
+    height: 15px;
+    background: linear-gradient(to bottom right, var(--primary), var(--secondary));
+    border-radius: 15px;
+    transition: .5s;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+}
+
+.screenshot-carousel .owl-dot::after {
+    position: absolute;
+    content: "";
+    width: 5px;
+    height: 5px;
+    top: 5px;
+    left: 5px;
+    background: #FFFFFF;
+    border-radius: 5px;
+}
+
+.screenshot-carousel .owl-dot.active {
+    box-shadow: 0 0 10px var(--dark);
+}
+
+
+/*** Final CTA band ***/
+/* Same treatment as the footer, so the closing band and the footer read
+   as one block instead of a bolt-on strip. */
+/* The band is dark blue end to end, so its copy is white and its primary
+   button is the inverted white pill. */
+.cta-band {
+    background: var(--gradient-deep);
+}
+
+.cta-band .btn-light {
+    background: #FFFFFF;
+    color: var(--deep);
+}
+
+.cta-band .btn-light:hover {
+    background: var(--light);
+    color: var(--secondary);
+}
+
+
+/*** Reveal-on-scroll ***/
+/* The template's markup says class="wow fadeInUp" data-wow-delay="0.1s"
+   and wow.js hid every .wow box, then added animate.css's .animated to
+   run the entrance when the box scrolled into view. js/main.js is gone,
+   but the class names and the stagger are exactly as shipped: the React
+   wrapper in components/marketing/landing-motion.tsx performs the same
+   two steps with an IntersectionObserver. */
+.wow {
+    visibility: hidden;
+}
+
+.wow.animated {
+    visibility: visible;
+}
+
+
+/*** Footer ***/
+.footer {
+    margin-top: 6rem;
+    padding-top: 9rem;
+    background:
+        url(/landing/img/bg-circle.png),
+        url(/landing/img/bg-triangle.png),
+        url(/landing/img/bg-top.png),
+        var(--gradient-deep);
+    background-position:
+        left 0px bottom 0px,
+        right 0px top 50%,
+        center top;
+    background-repeat: no-repeat;
+}
+
+.footer .btn.btn-link {
+    display: block;
+    margin-bottom: 10px;
+    padding: 0;
+    text-align: left;
+    color: var(--light);
+    font-weight: normal;
+    transition: .3s;
+}
+
+.footer .btn.btn-link::before {
+    position: relative;
+    content: "\203A";
+    margin-right: 10px;
+    font-weight: 900;
+}
+
+.footer .btn.btn-link:hover {
+    color: #FFFFFF;
+    letter-spacing: 1px;
+    box-shadow: none;
+}
+
+/* Contact rows: icon, then the value. Written as flex so a long email
+   address wraps under itself instead of under the icon. */
+.footer-detail {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 10px;
+}
+
+.footer-detail svg {
+    flex-shrink: 0;
+    margin-top: 3px;
+}
+
+.footer-detail a {
+    color: #FFFFFF;
+    font-weight: 500;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(255, 255, 255, .4);
+}
+
+.footer-detail a:hover {
+    color: #FFFFFF;
+    border-bottom-color: #FFFFFF;
+}
+
+/* Legal entries, styled like the Quick Link list. These are real routes
+   now (/terms, /privacy), rendered by the (legal) route group. */
+.footer-plain {
+    display: block;
+    margin-bottom: 10px;
+    color: var(--light);
+    font-weight: normal;
+    text-decoration: none;
+}
+
+.footer-plain:hover {
+    color: #FFFFFF;
+    letter-spacing: 1px;
+}
+
+.footer .copyright {
+    padding: 25px 0;
+    font-size: 14px;
+    border-top: 1px solid rgba(256, 256, 256, .1);
+}
+
+.footer .copyright a {
+    color: var(--light);
+}
+
+.footer .footer-menu a {
+    margin-right: 15px;
+    padding-right: 15px;
+    border-right: 1px solid rgba(255, 255, 255, .1);
+}
+
+.footer .footer-menu a:last-child {
+    margin-right: 0;
+    padding-right: 0;
+    border-right: none;
+}
+
+
+/*** Legal pages ***/
+/* /terms and /privacy reuse these stylesheets but have no hero, so the
+   header bar keeps the dark ground the navbar has while it is transparent
+   over the hero, and the document itself sits on white (navy heading on
+   #FFFFFF is 14.5:1, body #25415F is 10.5:1, the muted meta line #48658A
+   is 5.9:1 — all AA). */
+.legal-bar {
+    background: var(--gradient-deep);
+}
+
+.legal-page {
+    padding: 4rem 0 5rem;
+}
+
+.legal-page .legal-updated {
+    margin-bottom: 0;
+    color: var(--muted);
+    font-size: 15px;
+}
+
+.legal-page h2 {
+    margin: 2.5rem 0 .75rem;
+    font-size: 1.35rem;
+    color: var(--dark);
+}
+
+.legal-page p {
+    color: var(--body);
+    line-height: 1.75;
+}
+
+.legal-page .btn {
+    margin-right: 12px;
+}
+
+.legal-footer {
+    padding: 25px 0;
+    font-size: 14px;
+    background: var(--gradient-deep);
+    color: var(--light);
+}
+
+.legal-footer a {
+    color: var(--light);
+    text-decoration: none;
+}
+
+.legal-footer a:hover {
+    color: #FFFFFF;
+}
+
+
+/*** Overrides for utilities Bootstrap compiled with its own values ***/
+/* Only .text-primary needs pinning (the preloader uses it). .bg-primary
+   is left alone on purpose: on the hero and the footer it sits under
+   the gradient that template/style.css paints, so it never shows. */
+.text-primary {
+    color: var(--primary) !important;
+}
+
+/* Bootstrap ships .bg-light as a flat grey. On this palette the card and
+   step backgrounds read better as the same very light blue the big
+   gradient uses (dark text on #EAF4FF measures 10.5:1). */
+.bg-light {
+    background-color: var(--light) !important;
+}
+
+/* Keep the page on the app's Inter stack instead of the template's
+   Google Fonts (Heebo for body text, Jost for the navbar). The white
+   body is the template's own assumption: the app's root body paints
+   `bg-background`, which is a dark surface when the visitor's theme is
+   dark, and the landing page's frame is only 1400px wide, so without
+   this the page would sit in dark gutters. */
+body {
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+    background-color: #FFFFFF;
+    color: var(--body);
+}
+
+/* Focus visibility for keyboard users on the light background. */
+a:focus-visible,
+button:focus-visible {
+    outline: 3px solid rgba(29, 111, 184, .35);
+    outline-offset: 2px;
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+    .wow {
+        visibility: visible;
+    }
+
+    .animated,
+    .feature-item,
+    .btn,
+    .navbar-light .navbar-nav .nav-link,
+    .screenshot-carousel .owl-item {
+        animation-duration: .01ms !important;
+        transition-duration: .01ms !important;
+    }
+
+    .feature-item:hover {
+        margin-top: 0;
+    }
+}

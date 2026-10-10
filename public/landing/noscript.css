@@ -1,0 +1,16 @@
+/* Fallback for visitors with JavaScript disabled.
+
+   The landing page reveals its sections on scroll (the template's
+   wow.js behaviour, reimplemented in
+   src/components/marketing/landing-motion.tsx), which hides every
+   `.wow` element until the observer runs. Without script that
+   would leave the page blank, so this sheet is linked from a
+   <noscript> tag in the marketing layout. */
+
+.wow {
+    visibility: visible !important;
+}
+
+#spinner {
+    display: none !important;
+}

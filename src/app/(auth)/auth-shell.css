@@ -1,0 +1,827 @@
+/* ============================================================
+   Auth shell — the sliding two-panel sign-in / sign-up layout.
+
+   Provenance: the layout requested for these pages (a half-screen
+   gradient panel that slides from one side to the other, a scaled-in
+   form card, and copy that flies in from the panel's leading edge).
+   Two things were changed from that original:
+
+   1. PALETTE. The template ran on a green (#4EA685 / #57B894) with
+      Poppins and Boxicons from a CDN. Every colour here now reads from
+      the same blue scale the marketing landing defines once in
+      src/app/(marketing)/template/style.css — #0B3F6D into #165A96 for
+      the panel, white for the form side, #0B2A4A / #25415F / #48658A
+      for text. The values are repeated here rather than imported: that
+      sheet is loaded only by the marketing and legal route groups, and
+      pulling it into (auth) would drag Bootstrap into the auth bundle.
+      Contrast: white measures 11.5:1 on #0B3F6D and 7.2:1 on #165A96,
+      so the panel copy stays AA+ at every point of the gradient; on the
+      white side the body text is 10.5:1 and the links 5.2:1.
+      Typography is the app's own Inter (root layout, next/font) and the
+      icons are bundled lucide-react SVGs, so nothing here needs the
+      network — the same rule the landing port follows.
+
+   2. ONE FORM PER ROUTE. The template kept both forms in the DOM and
+      swapped them with a client-side toggle. These pages are separate
+      routes (/login, /signup, /forgot-password, /reset-password) because
+      the middleware redirects to /login by path, invitations deep-link
+      /signup?invite=<token>, and the reset link has to land on a URL the
+      email can point at. Each route therefore renders one form, and the
+      panel animation plays once on load instead of on toggle.
+
+      The reveal is the requested design's own mechanism, unchanged: a
+      `transition` on each element between a neutral state and a
+      mode-stamped one, with the original timings and delays (panel
+      1s; card 0.5s after 1s; panel copy 1s after 0.4s so it flies in
+      once the panel has nearly landed). `data-armed` is the equivalent
+      of the design's `container.classList.add('sign-in')` and is set by
+      the same 200ms timer in src/components/auth/auth-shell.tsx; the
+      direction is chosen from `data-mode`, which the server renders.
+
+      One consequence of keeping that mechanism is worth knowing: the
+      neutral state is `transform: scale(0)`, so the card only becomes
+      visible once React has hydrated and the timer has fired. That is
+      how the design works and it is unchanged on purpose.
+
+   Every selector is scoped under .auth-shell and this file is imported
+   only by src/app/(auth)/layout.tsx, so none of it can reach the
+   dashboard — including the unlayered-CSS-wins-over-Tailwind effect,
+   which is deliberate here (the design forces a light surface whatever
+   the user's theme is) but must not leak.
+   ============================================================ */
+
+.auth-shell {
+    /* Brand blues — same values as the landing's :root tokens. */
+    --a-primary: #1d6fb8;
+    --a-secondary: #165a96;
+    --a-deep: #0b3f6d;
+    --a-ink: #071f35;
+    --a-dark: #0b2a4a;
+    --a-body: #25415f;
+    --a-muted: #48658a;
+    --a-light: #eaf4ff;
+    --a-field: #f1f7fd;
+    --a-field-line: #d7e7f7;
+    --a-line: #b9cfe4;          /* field outline on a white card */
+    --a-required: #d13b3b;      /* the * on a mandatory heading */
+
+    --a-gradient: linear-gradient(-45deg, var(--a-deep) 0%, var(--a-secondary) 100%);
+    --a-button: linear-gradient(to bottom right, var(--a-primary), var(--a-secondary));
+
+    /* Reveal easing. A fast ease-out (rather than the template's 1s
+       ease-in-out) so the panel lands crisply instead of hanging in a
+       half-slid state — that floaty mid-frame is what read as "broken". */
+    --a-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+    position: relative;
+    min-height: 100dvh;
+    overflow: hidden;
+    background-color: #ffffff;
+    color: var(--a-dark);
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* ------------------------------------------------------------
+   The sliding panel
+
+   The design's own geometry, unchanged: one box 300vw wide and 100vh
+   tall, `right: 0`, translated by 35% / 0% / 100%, with
+   `border-bottom-right-radius` and `border-top-left-radius` of
+   `max(50vw, 50vh)`. That is what puts the huge rounded edge in the
+   middle of the screen — the corner radius is half the viewport, so the
+   boundary between the gradient and the white side is a single arc, and
+   the box being three screens wide is what stops its other edge ever
+   becoming visible. Only the palette differs from the original.
+   ------------------------------------------------------------ */
+
+.auth-shell::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 100vh;
+    width: 300vw;
+    transform: translate(35%, 0);
+    background-image: var(--a-gradient);
+    transition: 0.55s var(--a-ease);
+    box-shadow: rgba(0, 0, 0, 0.35) 0px 5px 15px;
+    border-bottom-right-radius: max(50vw, 50vh);
+    border-top-left-radius: max(50vw, 50vh);
+}
+
+/* Sign in / recover / reset ⇒ the panel sits on the left, so its right
+   edge is pulled back to the middle and the arc curves the other way. */
+.auth-shell[data-armed="true"]:not([data-mode="sign-up"])::before {
+    transform: translate(0, 0);
+    right: 50%;
+}
+
+/* Sign up ⇒ the panel slides to the right half and the form takes the left. */
+.auth-shell[data-armed="true"][data-mode="sign-up"]::before {
+    transform: translate(100%, 0);
+    right: 50%;
+}
+
+/* The copy that rides on the panel. It is a separate layer because the
+   panel is a pseudo-element and cannot hold children; the offsets are
+   the design's ±250%, which is what makes the words fly in from the
+   rounded edge instead of fading in place. */
+.auth-panel {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4rem;
+    box-sizing: border-box;
+    z-index: 5;
+    pointer-events: none;
+}
+
+.auth-shell[data-mode="sign-up"] .auth-panel {
+    inset: 0 0 0 auto;
+}
+
+.auth-panel-inner {
+    text-align: center;
+    color: #ffffff;
+}
+
+/* Sign-in copy starts off to the left, sign-up copy off to the right —
+   each one flies into the half the gradient occupies. */
+.auth-panel-inner--sign-in {
+    transform: translateX(-250%);
+    transition: 0.55s var(--a-ease);
+    transition-delay: 0.12s;
+}
+
+.auth-panel-inner--sign-up {
+    transform: translateX(250%);
+    transition: 0.55s var(--a-ease);
+    transition-delay: 0.12s;
+}
+
+.auth-shell[data-armed="true"] .auth-panel-inner {
+    transform: translateX(0);
+}
+
+.auth-panel-title {
+    margin: 2rem 0;
+    font-size: clamp(2rem, 3.4vw, 3.5rem);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    transition: 0.55s var(--a-ease);
+}
+
+.auth-panel-text {
+    margin: 0;
+    font-size: 1.05rem;
+    line-height: 1.65;
+    color: var(--a-light);
+    font-weight: 600;
+    transition: 0.55s var(--a-ease);
+    transition-delay: 0.05s;
+}
+
+/* ------------------------------------------------------------
+   The form side
+   ------------------------------------------------------------ */
+
+.auth-form-col {
+    position: relative;
+    /* Above the panel copy (z-index 5), which is decoration and must
+       never sit on top of a field. */
+    z-index: 6;
+    min-height: 100dvh;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: center;
+    justify-items: center;
+    padding: 2rem clamp(1rem, 3vw, 3rem);
+    box-sizing: border-box;
+}
+
+.auth-card {
+    width: 100%;
+    max-width: 26rem;
+    padding: 1.35rem clamp(1rem, 2.2vw, 1.4rem);
+    border-radius: 1.5rem;
+    background-color: #ffffff;
+    box-shadow: rgba(0, 0, 0, 0.2) 0px 8px 30px;
+    box-sizing: border-box;
+    transform: scale(0);
+    transition: 0.45s var(--a-ease);
+    transition-delay: 0.18s;
+}
+
+.auth-shell[data-armed="true"] .auth-card {
+    transform: scale(1);
+}
+
+/* Which half the card sits in follows the mode, so the card is always
+   on the white side of the panel. */
+.auth-card {
+    grid-column: 2;
+}
+
+.auth-shell[data-mode="sign-up"] .auth-card {
+    grid-column: 1;
+}
+
+/* ------------------------------------------------------------
+   Card head: logo + product name + headings
+   ------------------------------------------------------------ */
+
+.auth-brand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    text-decoration: none;
+    color: inherit;
+}
+
+.auth-brand img {
+    height: 2rem;
+    width: 2rem;
+    border-radius: 0.6rem;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+
+.auth-brand-name {
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--a-dark);
+}
+
+.auth-title {
+    margin: 0 0 0.25rem;
+    font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--a-dark);
+}
+
+.auth-subtitle {
+    margin: 0 0 0.9rem;
+    font-size: 0.88rem;
+    line-height: 1.5;
+    color: var(--a-muted);
+}
+
+/* The address inside "we sent a link to <strong>you@example.com</strong>"
+   — the one piece of a confirmation message worth pulling forward. */
+.auth-strong {
+    color: var(--a-dark);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------
+   Fields
+
+   Each field is a heading above a boxed control — "Full Name *",
+   "Email Address *" and so on, the asterisk in red — rather than the
+   placeholder-only stack the design's card uses. Two reasons the
+   headings matter here: the placeholders are examples (`you@example.com`,
+   `+91 96401 11265`), which stop saying what a field is once it has
+   text in it, and a label that disappears on input cannot be checked
+   again before submitting.
+   ------------------------------------------------------------ */
+
+.auth-field {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    margin: 0.6rem 0;
+}
+
+.auth-label {
+    align-self: flex-start;
+    margin-bottom: 0.3rem;
+    font-size: 0.92rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--a-dark);
+}
+
+.auth-required {
+    color: var(--a-required);
+    margin-left: 0.15rem;
+    font-weight: 700;
+}
+
+/* The control's own box. `position: relative` anchors the leading icon
+   and the trailing button, which is why the icon lives here and not on
+   the field: a field row can hold two controls (country code + number),
+   and each has its own icon. */
+.auth-control {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+}
+
+.auth-control-icon {
+    position: absolute;
+    left: 0.8rem;
+    width: 1.15rem;
+    height: 1.15rem;
+    color: var(--a-muted);
+    pointer-events: none;
+}
+
+.auth-input {
+    width: 100%;
+    min-width: 0;
+    padding: 0.6rem 0.9rem 0.6rem 2.6rem;
+    font-size: 0.95rem;
+    font-family: inherit;
+    color: var(--a-dark);
+    background-color: #ffffff;
+    border: 1px solid var(--a-line);
+    border-radius: 0.75rem;
+    outline: none;
+    box-sizing: border-box;
+    transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+}
+
+/* No leading icon on this one (the country select already labels the
+   number field), so reclaim its gutter. */
+.auth-input--plain {
+    padding-left: 1rem;
+}
+
+/* Room for the show/hide button. */
+.auth-input--trailing {
+    padding-right: 3rem;
+}
+
+.auth-input::placeholder {
+    color: var(--a-muted);
+    opacity: 1;
+}
+
+.auth-input:hover {
+    border-color: var(--a-primary);
+}
+
+.auth-input:focus,
+.auth-input:focus-visible {
+    border-color: var(--a-primary);
+    box-shadow: 0 0 0 3px rgba(29, 111, 184, 0.16);
+}
+
+.auth-input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Number + password inputs drop the spinners/caps-lock glyph the
+   browser adds; they fight the icon on the left. */
+.auth-input[type="tel"]::-webkit-outer-spin-button,
+.auth-input[type="tel"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+/* Autofill on a white card: Chrome otherwise paints its own pale yellow
+   and black text. */
+.auth-input:-webkit-autofill,
+.auth-input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--a-dark);
+    -webkit-box-shadow: 0 0 0 100rem #ffffff inset;
+    caret-color: var(--a-dark);
+}
+
+/* ------------------------------------------------------------
+   Country-code select
+
+   A dialling-code picker, as in the reference: the ISO pair and the
+   code read as one unit, and the number field keeps only local digits.
+   The value is still optional — `normalizePhone` accepts a bare
+   national number — but sending the code is what makes a stored number
+   callable from another country.
+   ------------------------------------------------------------ */
+
+.auth-phone-row {
+    display: flex;
+    align-items: stretch;
+    gap: 0.6rem;
+    width: 100%;
+}
+
+.auth-control--select {
+    flex: 0 0 6.25rem;
+    width: 6.25rem;
+}
+
+/* Inside a two-control row the number takes what the select doesn't.
+   `.auth-input`'s own `width: 100%` would otherwise fight the flex. */
+.auth-control--phone .auth-input {
+    flex: 1;
+    width: auto;
+}
+
+.auth-select {
+    width: 100%;
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 0.6rem 1.4rem 0.6rem 0.6rem;
+    font-size: 0.9rem;
+    font-family: inherit;
+    font-weight: 600;
+    color: var(--a-dark);
+    background-color: #ffffff;
+    border: 1px solid var(--a-line);
+    border-radius: 0.75rem;
+    outline: none;
+    box-sizing: border-box;
+    cursor: pointer;
+    transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+}
+
+.auth-select:focus-visible {
+    border-color: var(--a-primary);
+    box-shadow: 0 0 0 3px rgba(29, 111, 184, 0.16);
+}
+
+.auth-select-chevron {
+    position: absolute;
+    right: 0.5rem;
+    width: 0.85rem;
+    height: 0.85rem;
+    color: var(--a-muted);
+    pointer-events: none;
+}
+
+/* The button that turns a password field into a text field. */
+.auth-trailing-btn {
+    position: absolute;
+    right: 0.6rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.25rem;
+    border: 0;
+    border-radius: 0.5rem;
+    background: transparent;
+    color: var(--a-muted);
+    cursor: pointer;
+    transition: color 0.2s ease-in-out, background-color 0.2s ease-in-out;
+}
+
+.auth-trailing-btn:hover {
+    color: var(--a-primary);
+    background-color: var(--a-light);
+}
+
+.auth-trailing-btn svg {
+    width: 1.15rem;
+    height: 1.15rem;
+}
+
+/* The icon is absolutely positioned, so the field's height comes from the
+   input beside it; centre it against that height. */
+.auth-control .auth-control-icon {
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+/* Consent line: a checkbox followed by a sentence with two links in it. */
+.auth-consent {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    margin: 0.7rem 0 0;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    color: var(--a-muted);
+    text-align: left;
+}
+
+.auth-consent input[type="checkbox"] {
+    flex-shrink: 0;
+    width: 1.05rem;
+    height: 1.05rem;
+    margin: 0.15rem 0 0;
+    accent-color: var(--a-primary);
+    cursor: pointer;
+}
+
+.auth-consent .auth-link {
+    font-weight: 700;
+}
+
+.auth-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin: 0.35rem 0 -0.35rem;
+}
+
+.auth-hint {
+    margin: -0.15rem 0 0;
+    font-size: 0.76rem;
+    line-height: 1.45;
+    color: var(--a-muted);
+}
+
+/* ------------------------------------------------------------
+   Buttons and links
+   ------------------------------------------------------------ */
+
+/* Primary action. Applied to <button> and, for link-shaped actions
+   ("Request a new link"), to <a> — hence the decoration reset and the
+   border-box, which a button gets for free. */
+.auth-submit {
+    width: 100%;
+    margin-top: 0.85rem;
+    padding: 0.7rem 1rem;
+    font-size: 1.05rem;
+    font-weight: 600;
+    font-family: inherit;
+    color: #ffffff;
+    background: var(--a-button);
+    border: none;
+    border-radius: 0.75rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    box-sizing: border-box;
+    text-decoration: none;
+    transition: filter 0.2s ease-in-out, transform 0.2s ease-in-out;
+}
+
+.auth-submit:hover:not(:disabled) {
+    filter: brightness(0.92);
+}
+
+.auth-submit:focus-visible {
+    outline: 2px solid var(--a-ink);
+    outline-offset: 2px;
+}
+
+.auth-submit:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Secondary action (Back to sign in, Continue) — outlined, not filled,
+   so only one button on the card ever shouts. */
+.auth-submit-secondary {
+    width: 100%;
+    margin-top: 0.75rem;
+    padding: 0.65rem 1rem;
+    font-size: 0.98rem;
+    font-weight: 600;
+    font-family: inherit;
+    color: var(--a-secondary);
+    background-color: #ffffff;
+    border: 0.125rem solid var(--a-field-line);
+    border-radius: 0.75rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    text-decoration: none;
+    box-sizing: border-box;
+    transition: background-color 0.2s ease-in-out, border-color 0.2s ease-in-out;
+}
+
+.auth-submit-secondary:hover {
+    background-color: var(--a-light);
+    border-color: var(--a-primary);
+}
+
+.auth-submit-secondary + .auth-submit-secondary {
+    margin-top: 0.6rem;
+}
+
+.auth-link {
+    color: var(--a-primary);
+    font-weight: 600;
+    text-decoration: none;
+    border-radius: 0.25rem;
+}
+
+.auth-link:hover {
+    color: var(--a-secondary);
+    text-decoration: underline;
+}
+
+.auth-link:focus-visible {
+    outline: 2px solid var(--a-primary);
+    outline-offset: 2px;
+}
+
+.auth-switch {
+    margin: 1rem 0 0;
+    text-align: center;
+    font-size: 0.88rem;
+    color: var(--a-muted);
+}
+
+.auth-legal {
+    margin: 1.1rem 0 0;
+    text-align: center;
+    font-size: 0.78rem;
+    line-height: 1.6;
+    color: var(--a-muted);
+}
+
+/* The two links in that sentence come out of an ICU string (`<terms>` /
+   `<privacy>` tags), so they arrive with no class of their own — the
+   alternative is styling every call site the same way. */
+.auth-legal a {
+    color: var(--a-primary);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.auth-legal a:hover {
+    color: var(--a-secondary);
+    text-decoration: underline;
+}
+
+/* ------------------------------------------------------------
+   Messages
+   ------------------------------------------------------------ */
+
+.auth-alert {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.75rem 0.9rem;
+    border-radius: 0.75rem;
+    font-size: 0.88rem;
+    line-height: 1.5;
+    margin-bottom: 0.25rem;
+}
+
+.auth-alert svg {
+    flex-shrink: 0;
+    width: 1.1rem;
+    height: 1.1rem;
+    margin-top: 0.1rem;
+}
+
+.auth-alert-error {
+    color: #9d1c23;
+    background-color: #fdf2f2;
+    border: 1px solid #f2c6c6;
+}
+
+.auth-alert-warn {
+    color: #8a5300;
+    background-color: #fdf7ea;
+    border: 1px solid #f0dcb4;
+}
+
+.auth-success {
+    text-align: center;
+}
+
+.auth-success-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.25rem;
+    height: 3.25rem;
+    border-radius: 999px;
+    background-color: var(--a-light);
+    color: var(--a-secondary);
+    margin-bottom: 1rem;
+}
+
+.auth-success-icon svg {
+    width: 1.75rem;
+    height: 1.75rem;
+}
+
+.auth-spin {
+    width: 1.1rem;
+    height: 1.1rem;
+}
+
+/* The "checking your link" state — panel already slid, card not
+   needed yet, so it sits on the white half on its own. */
+.auth-loading {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.95rem;
+    color: var(--a-muted);
+}
+
+/* Paired with the size rule above: same class, spin added. */
+.auth-spin {
+    animation: auth-rotate 1s linear infinite;
+}
+
+@keyframes auth-rotate {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ------------------------------------------------------------
+   Below a laptop/tablet width the panel stops sliding and becomes a
+   header band; the card drops its shadow and sits under it. Same
+   treatment the layout uses on phones — two halves at 375px is just
+   two unreadable columns.
+   ------------------------------------------------------------ */
+
+@media (max-width: 991.98px) {
+    .auth-shell {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    .auth-panel {
+        position: relative;
+        inset: auto;
+        width: 100%;
+        min-height: 15rem;
+        padding: 3.5rem 1.5rem 2.5rem;
+        transform: none !important;
+        border-radius: 0 !important;
+        box-shadow: none;
+    }
+
+    .auth-panel-inner {
+        opacity: 1;
+        transform: none !important;
+        max-width: 34rem;
+    }
+
+    .auth-panel-title {
+        font-size: 1.6rem;
+    }
+
+    .auth-panel-text {
+        font-size: 0.98rem;
+    }
+
+    .auth-form-col {
+        display: block;
+        min-height: 0;
+        padding: 1.25rem 1.25rem 2.5rem;
+    }
+
+    .auth-card {
+        max-width: 34rem;
+        margin: 0 auto;
+        padding: 1.5rem 1.15rem;
+        box-shadow: none;
+        transform: none !important;
+    }
+
+    .auth-shell[data-mode="sign-up"] .auth-card,
+    .auth-card {
+        grid-column: auto;
+    }
+}
+
+/* Honour the OS "reduce motion" setting: no slide, no scale, no
+   delayed reveal — every element is simply painted in its final place.
+   The transitions on the fields, buttons and links stay: those are
+   hover feedback, not motion the user has to sit through. */
+@media (prefers-reduced-motion: reduce) {
+    .auth-shell::before,
+    .auth-panel-inner,
+    .auth-card {
+        transition: none;
+        transition-delay: 0s;
+    }
+
+    /* Snap straight to the landed state instead of sliding/scaling in.
+       The panel is `::before`, so it stops animating above; the copy and
+       card are pinned to their final transform here so they paint in
+       place even before the arm timer fires. */
+    .auth-shell .auth-panel-inner {
+        opacity: 1;
+        transform: translateX(0);
+    }
+
+    .auth-shell .auth-card {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    .auth-spin {
+        animation: none;
+    }
+}
