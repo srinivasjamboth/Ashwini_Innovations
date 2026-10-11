@@ -100,7 +100,7 @@ function SignupPageInner() {
       : "/dashboard";
     const emailRedirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`;
 
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
@@ -117,6 +117,14 @@ function SignupPageInner() {
     if (error) {
       setError(error.message);
       setLoading(false);
+      return;
+    }
+
+    // With "Confirm email" disabled in Supabase, signUp returns an active
+    // session — go straight to the app instead of showing the
+    // check-your-email screen (which would only make the user log in again).
+    if (data.session) {
+      window.location.assign(next);
       return;
     }
 
