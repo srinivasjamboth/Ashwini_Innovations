@@ -88,4 +88,45 @@ describe('parseContactCsv', () => {
       ],
     });
   });
+
+  it('accepts the Whatsapp + CountryCode sample format and composes E.164', () => {
+    const csv = `Name,CountryCode,Whatsapp
+Rahul Sharma,91,9876543210
+Priya Patel,91,9876543211`;
+
+    const { rows, hasPhoneColumn } = parseContactCsv(csv);
+    expect(hasPhoneColumn).toBe(true);
+    expect(rows.map((r) => r.phone)).toEqual(['+919876543210', '+919876543211']);
+    expect(rows[0].name).toBe('Rahul Sharma');
+  });
+
+  it('leaves an already-international Whatsapp number untouched', () => {
+    const csv = `Name,CountryCode,Whatsapp
+Amit Kumar,91,+919876543212`;
+
+    expect(parseContactCsv(csv).rows[0].phone).toBe('+919876543212');
+  });
+
+  it('prefers a legacy phone column when both phone and whatsapp exist', () => {
+    const csv = `phone,whatsapp,countrycode
++15551234567,9999999999,91`;
+
+    expect(parseContactCsv(csv).rows[0].phone).toBe('+15551234567');
+  });
+
+  it('keeps a national number with no country code so it is flagged invalid', () => {
+    const csv = `Name,Whatsapp
+Rahul,9876543210`;
+
+    expect(parseContactCsv(csv).rows[0].phone).toBe('9876543210');
+  });
+
+  it('reports no phone column when neither phone nor whatsapp is present', () => {
+    const csv = `name,email
+Alice,a@b.com`;
+
+    const result = parseContactCsv(csv);
+    expect(result.hasPhoneColumn).toBe(false);
+    expect(result.rows).toEqual([]);
+  });
 });

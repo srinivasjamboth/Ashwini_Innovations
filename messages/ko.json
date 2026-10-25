@@ -829,6 +829,7 @@
         "value": "값",
         "valuePlaceholder": "일치시킬 값",
         "uploadCsv": "CSV 파일 업로드",
+        "downloadSampleCsv": "샘플 CSV 다운로드",
         "csvFormatDesc": "'phone' 열(E.164 형식)이 필요합니다. 'name' 열은 선택 사항입니다.",
         "csvContactsFound": "CSV에서 유효한 연락처 {count}개를 찾았습니다.",
         "csvInvalidPhones": "{count}개 행을 건너뛰었습니다. 전화번호는 +와 국가 코드로 시작해야 합니다 (예: +14155550123).",

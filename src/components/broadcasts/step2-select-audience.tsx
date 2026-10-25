@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { parseBroadcastCsv } from '@/lib/broadcast-csv';
+import { buildSampleContactCsv } from '@/lib/contacts/csv-sample';
 import { CustomField, Tag } from '@/types';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
@@ -12,6 +13,7 @@ import {
   Filter,
   Upload,
   FileText,
+  Download,
   Loader2,
   ArrowRight,
   ArrowLeft,
@@ -259,6 +261,22 @@ export function Step2SelectAudience({
     onUpdate({ ...audience, csvContacts: result.contacts });
   }
 
+  // Hand the user a ready-to-fill template matching the format the parser
+  // expects (Name, CountryCode, Whatsapp — no `+`, country code split out).
+  function downloadSampleCsv() {
+    const blob = new Blob([buildSampleContactCsv()], {
+      type: 'text/csv;charset=utf-8;',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'contacts-sample.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
   function toggleTag(tagId: string) {
     const current = audience.tagIds ?? [];
     const updated = current.includes(tagId)
@@ -477,6 +495,17 @@ export function Step2SelectAudience({
             onChange={handleCsvChange}
             className="hidden"
           />
+
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={downloadSampleCsv}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+            >
+              <Download className="h-3.5 w-3.5" />
+              {t('selectAudience.downloadSampleCsv')}
+            </button>
+          </div>
         </div>
       )}
 

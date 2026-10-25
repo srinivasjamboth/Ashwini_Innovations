@@ -61,8 +61,17 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
     .split(',')
     .map((h) => h.trim().toLowerCase().replace(/["']/g, ''));
 
+  // The number can arrive as a single `phone` column (legacy: E.164 with a
+  // leading `+`) or as a `whatsapp` column paired with a separate
+  // `countrycode` column (the sample format: no `+`, country code split out
+  // into its own column). Either header is accepted; when both are present
+  // `phone` wins so existing files behave exactly as before.
   const phoneIdx = headers.indexOf('phone');
-  if (phoneIdx === -1) {
+  const whatsappIdx = headers.indexOf('whatsapp');
+  const countryCodeIdx = headers.indexOf('countrycode');
+  const numberIdx = phoneIdx !== -1 ? phoneIdx : whatsappIdx;
+
+  if (numberIdx === -1) {
     return {
       rows: [],
       hasPhoneColumn: false,
@@ -89,7 +98,12 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
     // it there means the import result can tell the user "N contacts
     // had no phone" instead of the row just vanishing with the total
     // row count silently short of what's actually in the file.
-    const phone = values[phoneIdx]?.replace(/["']/g, '').trim() ?? '';
+    const numberRaw = values[numberIdx]?.replace(/["']/g, '').trim() ?? '';
+    const countryCodeRaw =
+      countryCodeIdx >= 0
+        ? values[countryCodeIdx]?.replace(/["']/g, '').trim() ?? ''
+        : '';
+    const phone = composeInternationalPhone(numberRaw, countryCodeRaw);
 
     rows.push({
       phone,
@@ -116,6 +130,32 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
     hasTagsColumn: tagsIdx >= 0,
     hasCompanyColumn: companyIdx >= 0,
   };
+}
+
+/**
+ * Combine a (possibly national) number with an optional separate country
+ * code into the international form the rest of the pipeline expects.
+ *
+ * - Already international (`+91 98765 43210`) → returned untouched; the
+ *   `+` is load-bearing for `parseInternationalPhone`, so we never strip it.
+ * - National number + a `countrycode` cell (`9876543210` + `91`) →
+ *   `+919876543210`. This is what lets the sample CSV omit the `+`.
+ * - National number with no country code → returned as-is so it is still
+ *   counted invalid downstream (issue #586) rather than guessed a country.
+ */
+export function composeInternationalPhone(
+  number: string,
+  countryCode: string
+): string {
+  const raw = number.trim();
+  if (!raw) return '';
+  if (raw.startsWith('+')) return raw;
+
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return raw;
+
+  const cc = countryCode.replace(/\D/g, '');
+  return cc ? `+${cc}${digits}` : raw;
 }
 
 /** Simple CSV line parse (handles quoted fields). */

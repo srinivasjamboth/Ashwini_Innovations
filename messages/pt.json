@@ -829,6 +829,7 @@
         "value": "Valor",
         "valuePlaceholder": "Valor a comparar",
         "uploadCsv": "Enviar arquivo CSV",
+        "downloadSampleCsv": "Baixar CSV de exemplo",
         "csvFormatDesc": "Deve conter uma coluna 'phone' (formato E.164). A coluna 'name' é opcional.",
         "csvContactsFound": "{count} contato(s) válido(s) encontrado(s) no CSV.",
         "csvInvalidPhones": "{count} linha(s) ignorada(s): os números de telefone devem começar com + e o código do país (ex.: +5511999990000).",
