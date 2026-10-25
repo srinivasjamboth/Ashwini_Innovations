@@ -139,8 +139,15 @@ export async function middleware(request: NextRequest) {
   }
 
   // API routes that need auth (not webhooks)
+  // Webhooks (verified by signature upstream) and scheduler-cron endpoints
+  // (guarded by their own shared secret inside the route) arrive WITHOUT a
+  // user session — Meta for webhooks, and on Vercel a Cron Job sending
+  // `Authorization: Bearer $CRON_SECRET`. Exempt both so the edge doesn't
+  // 401 the request before the route can check its secret. The cron route
+  // fails closed on its own if no secret is configured.
   if (!user && request.nextUrl.pathname.startsWith('/api/whatsapp/') &&
-      !request.nextUrl.pathname.includes('/webhook')) {
+      !request.nextUrl.pathname.includes('/webhook') &&
+      !request.nextUrl.pathname.endsWith('/cron')) {
     return withRefreshedCookies(
       NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     )

@@ -12,13 +12,14 @@
 // paths can never diverge. Running both is safe: each campaign is claimed
 // with one conditional UPDATE, so overlapping invocations can't double-send.
 //
-// Auth + shape mirror /api/automations/cron and /api/flows/cron: a GET
-// guarded by the shared AUTOMATION_CRON_SECRET via `x-cron-secret`, run
-// on any scheduler (Vercel Cron / GitHub Action / external pinger) every
-// minute. Re-using that secret keeps operators to one value to set. This
-// endpoint is only required for multi-instance deployments; a single
-// self-hosted server fires schedules on its own via the instrumentation
-// scheduler, with no external caller.
+// Auth accepts TWO paths so the same endpoint works on every host:
+//   1. `x-cron-secret: <AUTOMATION_CRON_SECRET>` — GitHub Action / curl / any
+//      external pinger (shared with /api/automations/cron and /api/flows/cron).
+//   2. `Authorization: Bearer <CRON_SECRET>` — what Vercel Cron Jobs send
+//      automatically on each scheduled hit. On Vercel there is NO always-on
+//      process, so the in-process instrumentation scheduler is inert; this
+//      external cron (declared in vercel.json) IS the scheduler trigger.
+// A deployment only needs the secret matching its pinger to be set.
 // ============================================================
 
 import { timingSafeEqual } from 'node:crypto';
@@ -31,20 +32,34 @@ import { ensureBroadcastSchedulerArmed } from '@/lib/whatsapp/broadcast-schedule
 // ceiling the resume route uses.
 export const maxDuration = 300;
 
+/**
+ * Constant-time secret compare. Length pre-check because timingSafeEqual
+ * throws on unequal lengths; only the length leaks, which isn't sensitive.
+ */
+function secretMatches(supplied: string, expected: string | undefined): boolean {
+  if (!expected) return false;
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export async function GET(request: Request) {
-  const expected = process.env.AUTOMATION_CRON_SECRET;
-  if (!expected) {
+  const automationSecret = process.env.AUTOMATION_CRON_SECRET;
+  const vercelCronSecret = process.env.CRON_SECRET;
+  if (!automationSecret && !vercelCronSecret) {
     return NextResponse.json({ error: 'cron not configured' }, { status: 503 });
   }
-  // Constant-time compare (length pre-check: timingSafeEqual throws on
-  // unequal lengths). Only the length leaks, which isn't sensitive.
-  const supplied = request.headers.get('x-cron-secret') ?? '';
-  const suppliedBuf = Buffer.from(supplied);
-  const expectedBuf = Buffer.from(expected);
-  if (
-    suppliedBuf.length !== expectedBuf.length ||
-    !timingSafeEqual(suppliedBuf, expectedBuf)
-  ) {
+
+  // Either header authorizes: the shared x-cron-secret (external pingers)
+  // or Vercel's Authorization: Bearer <CRON_SECRET> (Vercel Cron Jobs).
+  const headerSecret = request.headers.get('x-cron-secret') ?? '';
+  const auth = request.headers.get('authorization') ?? '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
+
+  const authorized =
+    secretMatches(headerSecret, automationSecret) ||
+    secretMatches(bearer, vercelCronSecret);
+  if (!authorized) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
