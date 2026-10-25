@@ -82,6 +82,15 @@ interface SignupResult {
   waba_id: string | null;
 }
 
+interface WabaNumberOption {
+  id: string;
+  display_phone_number?: string;
+  verified_name?: string;
+  /** WABA that owns this number — the picker can span sibling WABAs
+   *  of the portfolio, and POST /config validates the pair together. */
+  waba_id?: string;
+}
+
 /**
  * Drive the client half of Embedded Signup: load + init the FB SDK, open
  * the Meta popup with FB.login, and resolve once we hold BOTH the
@@ -110,7 +119,11 @@ function runEmbeddedSignup(appId: string, configId: string): Promise<SignupResul
         };
 
         const maybeFinish = () => {
-          if (code && assets?.phone_number_id) {
+          // Accept a WABA-only finish too — that is what Meta sends when
+          // the customer connected an account whose numbers were already
+          // registered (no new number was created in the flow). The
+          // caller then lists and picks from those numbers.
+          if (code && assets && (assets.phone_number_id || assets.waba_id)) {
             settle(() =>
               resolve({
                 code: code as string,
@@ -159,7 +172,7 @@ function runEmbeddedSignup(appId: string, configId: string): Promise<SignupResul
             // FINISH message shortly, the flow didn't complete as expected;
             // fail with a clear reason instead of waiting out the guard.
             window.setTimeout(() => {
-              if (!settled && code && !assets?.phone_number_id) {
+              if (!settled && code && !assets?.phone_number_id && !assets?.waba_id) {
                 settle(() => reject(new Error('no-assets')));
               }
             }, 4000);
@@ -168,6 +181,12 @@ function runEmbeddedSignup(appId: string, configId: string): Promise<SignupResul
             config_id: configId,
             response_type: 'code',
             override_default_response_type: true,
+            // business_management is NOT optional: without it the
+            // exchanged token cannot call /me/businesses, so numbers
+            // verified under OTHER WABAs / portfolios of the same
+            // business stay invisible after connect. Meta's Embedded
+            // Signup docs list exactly these scopes.
+            scope: 'whatsapp_business_management whatsapp_business_messaging business_management',
             extras: {
               featureType: 'whatsapp_embedded_signup',
               sessionInfoVersion: '3',
@@ -199,10 +218,81 @@ export function WhatsAppEmbeddedSignup({
   const t = useTranslations('Settings.whatsapp');
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when signup finished with a WABA but no specific number — the
+  // user then picks one of the WABA's already-registered numbers.
+  const [pendingNumbers, setPendingNumbers] = useState<{
+    accessToken: string;
+    wabaId: string;
+    numbers: WabaNumberOption[];
+  } | null>(null);
 
   const appId = process.env.NEXT_PUBLIC_META_APP_ID;
   const configId = process.env.NEXT_PUBLIC_WHATSAPP_CONFIG_ID;
   const enabled = Boolean(appId && configId);
+
+  /** Save through the SAME endpoint as manual configuration so the
+   * verify / register / subscribe / encrypt / upsert logic (and the
+   * resulting connected state) is identical for both paths. */
+  const saveConnected = useCallback(
+    async (phoneNumberId: string, wabaId: string | null, accessToken: string) => {
+      const saveRes = await fetch('/api/whatsapp/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone_number_id: phoneNumberId,
+          waba_id: wabaId,
+          access_token: accessToken,
+        }),
+      });
+      const saved = await saveRes.json();
+      if (!saveRes.ok) {
+        throw new Error(saved.error || t('metaConnectFailed'));
+      }
+      toast.success(
+        saved.registered ? t('metaConnectSuccess') : t('savedRegistrationSkipped'),
+        { duration: 8000 },
+      );
+      // POST /api/whatsapp/config now syncs EVERY number under the
+      // WABA into the catalog (migration 047). Tell the user when the
+      // session number was not the only one — they switch the active
+      // sender on the status card that appears right after refetch.
+      const syncedCount = Array.isArray(saved.phone_numbers)
+        ? saved.phone_numbers.filter((n: { removed_at?: string | null }) => !n.removed_at).length
+        : 0;
+      if (saved.phone_numbers_empty) {
+        toast.warning(t('metaConnectNoNumbers'), { duration: 10000 });
+      } else if (syncedCount > 1) {
+        toast.info(t('metaConnectMultipleNumbers', { count: syncedCount }), {
+          duration: 10000,
+        });
+      }
+      await onConnected();
+    },
+    [t, onConnected],
+  );
+
+  const handlePickNumber = useCallback(
+    async (option: WabaNumberOption) => {
+      if (!pendingNumbers) return;
+      setError(null);
+      setConnecting(true);
+      try {
+        // Save the number with ITS OWN waba_id — the list can include
+        // numbers from sibling WABAs the session didn't land on.
+        await saveConnected(
+          option.id,
+          option.waba_id ?? pendingNumbers.wabaId,
+          pendingNumbers.accessToken,
+        );
+        setPendingNumbers(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t('metaConnectFailed'));
+      } finally {
+        setConnecting(false);
+      }
+    },
+    [pendingNumbers, saveConnected, t],
+  );
 
   const handleConnect = useCallback(async () => {
     if (!appId || !configId) {
@@ -210,6 +300,7 @@ export function WhatsAppEmbeddedSignup({
       return;
     }
     setError(null);
+    setPendingNumbers(null);
     setConnecting(true);
     try {
       const result = await runEmbeddedSignup(appId, configId);
@@ -228,33 +319,37 @@ export function WhatsAppEmbeddedSignup({
       if (!cbRes.ok || !cb.access_token) {
         throw new Error(cb.error || t('metaConnectFailed'));
       }
-      if (!cb.phone_number_id) {
-        setError(t('metaConnectNoAssets'));
+
+      // Meta answered which permissions the token carries. Without
+      // business_management the server cannot enumerate the customer's
+      // other portfolios, so previously verified numbers under sibling
+      // WABAs will not appear — say so up front instead of letting the
+      // user wonder whether the connect "worked".
+      if (Array.isArray(cb.granted_scopes) && cb.granted_scopes.length > 0) {
+        console.log('[embedded-signup] granted scopes:', cb.granted_scopes.join(', '));
+        if (!cb.granted_scopes.includes('business_management')) {
+          toast.warning(t('metaScopeMissing'), { duration: 12000 });
+        }
+      }
+
+      // 2a) Fresh-number path — Meta reported a concrete phone number.
+      if (cb.phone_number_id) {
+        await saveConnected(cb.phone_number_id, cb.waba_id ?? null, cb.access_token);
         return;
       }
 
-      // 2) Save through the SAME endpoint as manual configuration so the
-      //    verify / register / subscribe / encrypt / upsert logic (and the
-      //    resulting connected state) is identical for both paths.
-      const saveRes = await fetch('/api/whatsapp/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone_number_id: cb.phone_number_id,
-          waba_id: cb.waba_id ?? null,
-          access_token: cb.access_token,
-        }),
-      });
-      const saved = await saveRes.json();
-      if (!saveRes.ok) {
-        throw new Error(saved.error || t('metaConnectFailed'));
+      // 2b) Existing-number path — only a WABA came back; the server
+      // listed its registered numbers, let the user choose one.
+      if (cb.waba_id && Array.isArray(cb.phone_numbers) && cb.phone_numbers.length > 0) {
+        setPendingNumbers({
+          accessToken: cb.access_token,
+          wabaId: cb.waba_id,
+          numbers: cb.phone_numbers,
+        });
+        return;
       }
 
-      toast.success(
-        saved.registered ? t('metaConnectSuccess') : t('savedRegistrationSkipped'),
-        { duration: 8000 },
-      );
-      await onConnected();
+      setError(t('metaConnectNoAssets'));
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       if (msg === 'cancelled') {
@@ -268,7 +363,7 @@ export function WhatsAppEmbeddedSignup({
     } finally {
       setConnecting(false);
     }
-  }, [appId, configId, onConnected, t]);
+  }, [appId, configId, saveConnected, t]);
 
   if (!enabled) return null;
 
@@ -301,6 +396,26 @@ export function WhatsAppEmbeddedSignup({
             </>
           )}
         </Button>
+        {pendingNumbers && (
+          <div className="space-y-2 rounded-lg border bg-background p-3">
+            <p className="text-sm font-medium">
+              Select which WhatsApp number to connect:
+            </p>
+            {pendingNumbers.numbers.map((n) => (
+              <Button
+                key={n.id}
+                type="button"
+                variant="outline"
+                className="w-full justify-start text-left"
+                disabled={connecting}
+                onClick={() => handlePickNumber(n)}
+              >
+                {n.verified_name ? `${n.verified_name} — ` : ''}
+                {n.display_phone_number || `ID ${n.id}`}
+              </Button>
+            ))}
+          </div>
+        )}
         {error && <p className="text-sm text-red-500">{error}</p>}
       </CardContent>
     </Card>

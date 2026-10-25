@@ -288,7 +288,7 @@ function PageHeader({
         </a>
         <GatedButton
           canAct={canManage}
-          gateReason="create forms"
+          gateReason="create forms" planFeature="whatsapp_forms"
           onClick={onCreate}
           className="bg-primary text-primary-foreground hover:bg-primary/90"
         >

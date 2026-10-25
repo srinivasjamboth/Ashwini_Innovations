@@ -160,6 +160,15 @@ vi.mock('@/lib/whatsapp/meta-api', () => ({
   sendMediaMessage: vi.fn(),
 }))
 
+// Plan enforcement runs on every send now (`assertActive`); these tests
+// exercise the contact_id send path, not billing, so pin the account to
+// an active plan: assertActive resolves and planErrorResponse (the 403
+// mapper in the outer catch) returns null so it never intercepts.
+vi.mock('@/lib/plans/guard', () => ({
+  assertActive: vi.fn(async () => {}),
+  planErrorResponse: vi.fn(() => null),
+}))
+
 import { POST } from './route'
 
 function postContactTemplate(overrides: Record<string, unknown> = {}) {

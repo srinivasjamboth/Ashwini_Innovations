@@ -38,6 +38,11 @@ export const maxDuration = 60;
 import { ok, fail, toApiErrorResponse } from '@/lib/api/v1/respond';
 import { resolveAuditUserId, ContactError } from '@/lib/api/v1/contacts';
 import {
+  checkLimit,
+  getEntitlements,
+  incrementUsage,
+} from '@/lib/plans/entitlements';
+import {
   createBroadcast,
   deliverBroadcast,
   BroadcastError,
@@ -59,6 +64,23 @@ export async function POST(request: Request) {
       typeof body.template_name === 'string' ? body.template_name : '';
     const recipients = Array.isArray(body.recipients) ? body.recipients : [];
 
+    // Plan enforcement (Part 3/4): a template broadcast is the bulk-message
+    // quota and is blocked entirely for expired accounts. Pre-check the whole
+    // batch against the requested recipients (an upper bound — createBroadcast
+    // may dedup down) and reject the operation up front, before any rows or
+    // sends, so we never persist a campaign we can't deliver. The number
+    // ACTUALLY sent is charged after fan-out below.
+    const ent = await getEntitlements(ctx.accountId);
+    if (ent.effectiveStatus === 'expired') {
+      return fail('subscription_expired', 'Subscription expired — renew to send broadcasts.', 403);
+    }
+    if (recipients.length > 0) {
+      const bulk = await checkLimit(ctx.accountId, 'bulk_messages', recipients.length);
+      if (!bulk.allowed) {
+        return fail(bulk.reason ?? 'forbidden', 'Bulk message limit reached', 403);
+      }
+    }
+
     const auditUserId = await resolveAuditUserId(ctx.supabase, ctx.accountId);
 
     const plan = await createBroadcast(ctx.supabase, ctx.accountId, auditUserId, {
@@ -76,8 +98,21 @@ export async function POST(request: Request) {
 
     // Fan out after the response is sent. Uses the same service-role
     // client — no request-scoped auth needed for the Meta calls or
-    // the account-scoped row updates.
-    after(() => deliverBroadcast(ctx.supabase, plan));
+    // the account-scoped row updates. Once delivery settles, charge the
+    // bulk quota by the number of recipients that actually reached 'sent'
+    // (failures don't consume quota; deletions never restore it).
+    after(async () => {
+      await deliverBroadcast(ctx.supabase, plan);
+      const { count } = await ctx.supabase
+        .from('broadcast_recipients')
+        .select('id', { count: 'exact', head: true })
+        .eq('broadcast_id', plan.broadcastId)
+        .eq('status', 'sent');
+      const sentCount = count ?? 0;
+      if (sentCount > 0) {
+        await incrementUsage(ctx.accountId, 'bulk_messages', sentCount);
+      }
+    });
 
     return ok(
       {

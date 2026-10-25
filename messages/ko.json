@@ -691,7 +691,8 @@
       },
       "errorLoad": "브로드캐스트를 불러오지 못했습니다",
       "broadcastInProgress": "브로드캐스트 진행 중",
-      "retry": "다시 시도"
+      "retry": "다시 시도",
+      "scheduledColumnHint": "전송 예약됨"
     },
     "status": {
       "draft": "초안",
@@ -699,6 +700,7 @@
       "sending": "전송 중",
       "sent": "전송됨",
       "failed": "실패",
+      "cancelled": "취소됨",
       "pending": "대기 중",
       "delivered": "전달됨",
       "read": "읽음",
@@ -751,7 +753,16 @@
       "retryFailed": "실패 재시도 ({count})",
       "toastResumeStarted": "{count}명에게 백그라운드로 발송 중입니다.",
       "toastResumeStartedCapped": "{count}명에게 백그라운드로 발송 중입니다. 나머지 {remaining}명은 한 번 더 실행해야 합니다.",
-      "toastResumeFailed": "이어서 발송할 수 없습니다: {error}"
+      "toastResumeFailed": "이어서 발송할 수 없습니다: {error}",
+      "scheduledFor": "전송 예약",
+      "reschedule": "예약 변경",
+      "cancelSchedule": "예약 취소",
+      "confirmReschedule": "새 시간 저장",
+      "rescheduleIncomplete": "먼저 날짜, 시간, 시간대를 선택하세요.",
+      "toastCancelled": "예약된 브로드캐스트가 취소되었습니다",
+      "toastCancelFailed": "취소할 수 없습니다: {error}",
+      "toastRescheduled": "브로드캐스트 예약이 변경되었습니다",
+      "toastRescheduleFailed": "예약을 변경할 수 없습니다: {error}"
     },
     "new": {
       "title": "새 브로드캐스트",
@@ -766,7 +777,8 @@
       "toastNotSignedIn": "로그인되어 있지 않습니다.",
       "toastNotLinked": "프로필이 계정에 연결되어 있지 않습니다.",
       "toastFailedDraft": "초안 저장 실패: {error}",
-      "toastDraftSaved": "초안이 저장되었습니다"
+      "toastDraftSaved": "초안이 저장되었습니다",
+      "toastScheduled": "브로드캐스트가 예약되었습니다"
     },
     "wizard": {
       "next": "다음",
@@ -874,7 +886,19 @@
         "estimatedReach": "예상 도달 수",
         "language": "언어",
         "confirmTitle": "브로드캐스트 확인",
-        "confirmDesc": "<b>{template}</b> 템플릿으로 연락처 <b>{count, number}</b>명에게 이 브로드캐스트를 보내려고 합니다. 이 작업은 되돌릴 수 없습니다."
+        "confirmDesc": "<b>{template}</b> 템플릿으로 연락처 <b>{count, number}</b>명에게 이 브로드캐스트를 보내려고 합니다. 이 작업은 되돌릴 수 없습니다.",
+        "when": "언제",
+        "modeNow": "지금 전송",
+        "modeSchedule": "예약",
+        "scheduleFor": "이 브로드캐스트 예약",
+        "date": "날짜",
+        "time": "시간",
+        "timezone": "시간대",
+        "pastError": "미래의 날짜와 시간을 선택하세요.",
+        "invalidError": "올바른 날짜와 시간을 입력하세요.",
+        "scheduleButton": "브로드캐스트 예약",
+        "scheduleConfirmTitle": "예약 브로드캐스트 확인",
+        "scheduleConfirmDesc": "이 브로드캐스트는 <b>{when}</b>에 연락처 <b>{count, number}</b>명에게 전송됩니다. 실행 전 언제든지 예약 변경이나 취소가 가능합니다."
       }
     }
   },
@@ -1621,7 +1645,7 @@
       "resetConfig": "설정 초기화",
       "credentialsValid": "자격 증명이 유효합니다",
       "notConnected": "연결되지 않음",
-      "connectedDesc": "액세스 토큰으로 Meta 인증이 완료되었습니다. 웹훅이 실제로 연결되었는지는 아래 등록 상태를 확인하세요.",
+      "connectedDesc": "액세스 토큰으로 Meta 인증이 완료되었습니다.",
       "notConnectedDesc": "아래에서 Meta API 자격 증명을 설정해 WhatsApp 비즈니스 계정을 연결하세요.",
       "registered": "등록됨 — Meta가 Ashwini Innovations으로 이벤트를 전달합니다",
       "notRegistered": "등록되지 않음 — Meta가 이벤트를 전달하지 않습니다",
@@ -1629,8 +1653,8 @@
       "subscribedSince": "{date}부터 구독 중입니다. 이벤트가 더 이상 도착하지 않으면 Meta로 확인을 클릭하세요.",
       "unknownDate": "알 수 없음",
       "lastAttemptFailed": "마지막 시도 실패 원인: ",
-      "retryHint": "아래에 2단계 PIN을 입력(또는 수정)하고 설정 저장을 클릭해 다시 시도하세요.",
-      "noRegistrationHint": "이 번호는 등록 추적 기능이 생기기 전에 저장되었거나 등록이 생략되었습니다. 아래에 2단계 PIN을 입력하고 설정 저장을 클릭해 구독하세요.",
+      "retryHint": "Meta를 통해 연결하면 등록이 자동으로 진행됩니다. 이 번호가 아직 활성이 아니면 \"Meta로 연결\"으로 다시 연결해 재시도하세요.",
+      "noRegistrationHint": "이 번호는 등록 추적 기능이 생기기 전에 저장되었거나 등록이 생략되었습니다. Meta를 통해 연결해야 Meta가 수신 메시지를 전달할 수 있습니다.",
       "diagnosticLastRun": "진단 — 마지막 실행: ",
       "live": "실시간",
       "notLive": "실시간 아님",
@@ -1728,18 +1752,54 @@
       "metaConnectCancelled": "Meta 연결이 취소되었습니다.",
       "metaConnectFailed": "Meta 연결을 완료할 수 없습니다. 다시 시도하거나 아래 수동 설정을 사용하세요.",
       "metaConnectNoAssets": "Meta가 완료에 필요한 WhatsApp 계정 세부 정보를 반환하지 않았습니다. 다시 시도하세요.",
-      "metaConnectNotConfigured": "이 서버에 Embedded Signup이 구성되어 있지 않습니다. Meta 앱 및 설정 id 환경 변수를 지정하거나 아래 수동 설정을 사용하세요."
+      "metaConnectNotConfigured": "이 서버에 Embedded Signup이 구성되어 있지 않습니다. Meta 앱 및 설정 id 환경 변수를 지정하거나 아래 수동 설정을 사용하세요.",
+      "metaConnectMultipleNumbers": "연결되었습니다. 이 WhatsApp 비즈니스 계정에서 {count}개의 번호를 찾았습니다 — 상태 카드에서 활성 번호를 선택하세요.",
+      "metaConnectNoNumbers": "연결되었지만 Meta에 이 WhatsApp 비즈니스 계정의 전화번호가 없습니다. Meta 비즈니스 관리자에서 번호를 추가한 후 상태를 새로고침하세요.",
+      "metaScopeMissing": "Meta가 이 연결에 비즈니스 접근 권한을 부여하지 않아 다른 비즈니스 포트폴리오의 번호를 표시할 수 없습니다. 다시 연결하고 Meta 팝업에서 모든 권한 요청을 승인하세요.",
+      "statusCard": {
+        "heading": "WhatsApp 메시징 설정",
+        "subtext": "대량 방송, 자동화 등을 이용하려면 몇 단계만 완료하면 됩니다.",
+        "refresh": "상태 새로고침",
+        "refreshing": "새로고침 중...",
+        "statusLabel": "상태",
+        "statusApproved": "승인됨",
+        "statusPending": "대기 중",
+        "statusRejected": "거부됨",
+        "statusUnknown": "알 수 없음",
+        "statusConnected": "연결됨",
+        "statusNotConnected": "연결되지 않음",
+        "numbersHeading": "이 WhatsApp 비즈니스 계정의 번호",
+        "activeBadge": "활성",
+        "setActive": "활성으로 설정",
+        "settingActive": "설정 중...",
+        "setActiveDone": "지금 {number}(으)로 전송 중",
+        "setActiveFailed": "번호 전환에 실패했습니다",
+        "syncNumbersFailed": "Meta에서 번호 목록을 새로고침할 수 없습니다",
+        "noNumbersWarning": "Meta에 이 WhatsApp 비즈니스 계정의 전화번호가 없습니다. Meta 비즈니스 관리자에서 번호를 추가한 후 상태를 새로고침하세요.",
+        "activeMissingWarning": "전송 번호가 더 이상 이 계정에 등록되어 있지 않습니다. 아래에서 새 활성 번호를 선택하세요.",
+        "syncSummary": "{wabas}개의 WhatsApp 비즈니스 계정에서 {numbers}개의 번호를 찾았습니다."
+      },
+      "disconnect": {
+        "button": "연결 해제",
+        "confirmTitle": "WhatsApp 연결을 해제할까요?",
+        "confirmDesc": "다시 연결할 때까지 대량 방송, 자동화, 채팅 등 모든 WhatsApp 메시징이 중단됩니다. 기존 기록(채팅, 연락처, 템플릿, 메시지 로그)은 보존됩니다.",
+        "cancel": "취소",
+        "confirmButton": "연결 해제",
+        "disconnecting": "연결 해제 중...",
+        "toastDone": "WhatsApp 연결이 해제되었습니다. 언제든 다시 연결해 메시지를 재개하세요.",
+        "toastFailed": "WhatsApp 연결 해제에 실패했습니다"
+      }
     },
     "sections": {
       "overview": "개요",
       "profile": "내 프로필",
       "security": "로그인 & 보안",
       "appearance": "화면 설정",
+      "billing": "결제 및 요금제",
       "whatsapp": "WhatsApp",
       "templates": "템플릿",
       "quick-replies": "빠른 답장",
       "fields": "필드 & 태그",
-      "deals": "딜 & 통화",
       "members": "팀원",
       "api": "API 키"
     },
@@ -1879,18 +1939,6 @@
       "newKeyDesc": "이 키를 사용할 연동 서비스의 이름을 붙이고, 필요한 권한 범위만 부여하세요.",
       "done": "완료",
       "networkError": "서버에 연결할 수 없습니다"
-    },
-    "deals": {
-      "title": "딜 & 통화",
-      "description": "새 딜과 파이프라인, 대시보드 합계에 사용되는 통화입니다.",
-      "defaultCurrency": "기본 통화",
-      "defaultCurrencyDesc": "새 딜은 이 통화를 기본값으로 사용하며, 파이프라인과 대시보드 합계도 이 통화로 표시됩니다. 기존 딜은 저장 당시의 통화를 그대로 유지합니다.",
-      "currencyLabel": "통화",
-      "adminOnlyHint": "계정 관리자만 기본 통화를 변경할 수 있습니다.",
-      "save": "저장",
-      "saving": "저장 중...",
-      "saveFailed": "기본 통화를 저장하지 못했습니다",
-      "saveSuccess": "기본 통화가 업데이트되었습니다"
     },
     "aiConfig": {
       "title": "에이전트 설정",
@@ -2151,6 +2199,75 @@
     "rowDescriptionPlaceholder": "설명 (선택)",
     "addRow": "행 추가",
     "addSection": "섹션 추가"
+  },
+  "Plans": {
+    "browseTitle": "플랜 선택",
+    "renewTitle": "구독 갱신",
+    "expiredTitle": "구독이 만료되었습니다",
+    "limitTitle": "플랜 한도 도달",
+    "featureTitle": "플랜에 포함되지 않은 기능",
+    "browseBody": "팀에 맞는 플랜을 선택하세요. 언제든지 변경할 수 있습니다.",
+    "expiredBody": "계속 메시지를 보내고 제한된 기능을 사용하려면 갱신하세요.",
+    "limitBody": "이 플랜에서 {feature} 항목을 {limit} 중 {current} 사용했습니다.",
+    "featureBody": "{feature}은(는) 현재 플랜에 포함되어 있지 않습니다. 업그레이드하여 잠금을 해제하세요.",
+    "monthly": "월간",
+    "yearly": "연간",
+    "perMonth": "/월",
+    "perYear": "/년",
+    "unlimited": "무제한",
+    "free": "무료",
+    "current": "현재",
+    "currentPlan": "현재 플랜",
+    "renew": "갱신",
+    "upgrade": "업그레이드",
+    "switchPlan": "플랜 변경",
+    "startTrial": "무료 체험 시작",
+    "trialUsed": "체험 사용 완료",
+    "working": "처리 중...",
+    "gatewayPending": "온라인 결제가 아직 설정되지 않았습니다. 활성화되면 결제가 시작됩니다.",
+    "checkoutError": "결제를 시작할 수 없습니다. 다시 시도해 주세요.",
+    "catalogError": "플랜을 불러올 수 없습니다. 다시 시도해 주세요.",
+    "limits": {
+      "contacts": "연락처",
+      "bulk_messages": "대량 메시지",
+      "templates": "템플릿",
+      "quick_replies": "빠른 답변",
+      "automation_flows": "자동화 플로우",
+      "whatsapp_forms": "WhatsApp 양식",
+      "team_members": "팀원"
+    },
+    "features": {
+      "fields_tags": "필드 및 태그",
+      "broadcast_scheduler": "브로드캐스트 예약",
+      "ai_agent": "AI 답변 에이전트"
+    }
+  },
+  "PlanBanner": {
+    "trialEnded": "무료 체험이 종료되었습니다",
+    "trialEndedBody": "브로드캐스트와 제한된 기능을 계속 사용하려면 플랜을 선택하세요.",
+    "subscriptionExpired": "구독이 {date}에 만료되었습니다",
+    "subscriptionExpiredBody": "대량 또는 템플릿 메시지를 보내고 채팅에 답변하려면 갱신하세요. 수신 메시지는 계속 접수됩니다.",
+    "choosePlan": "플랜 선택",
+    "renew": "갱신"
+  },
+  "Billing": {
+    "currentPlanTitle": "현재 플랜",
+    "statusActive": "활성",
+    "statusTrial": "체험",
+    "statusExpired": "만료",
+    "periodStart": "기간 시작",
+    "trialEnds": "체험 종료",
+    "renewsOn": "갱신일",
+    "renewPlan": "플랜 갱신",
+    "changePlan": "플랜 변경",
+    "usageTitle": "사용량",
+    "historyTitle": "결제 내역",
+    "loadingHistory": "로딩 중...",
+    "noPayments": "아직 기록된 결제가 없습니다.",
+    "date": "날짜",
+    "plan": "플랜",
+    "amount": "금액",
+    "status": "상태"
   },
   "DashboardShell": {
     "loading": "불러오는 중..."

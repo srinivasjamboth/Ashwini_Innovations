@@ -120,7 +120,25 @@ function LineSvg({
   const svgRef = useRef<SVGSVGElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
 
-  const chartW = VB_W - PADDING.left - PADDING.right
+  // Measure the wrapper so the viewBox width tracks rendered pixels
+  // 1:1. Left at the fixed 760-wide viewBox, the default
+  // preserveAspectRatio="xMidYMid meet" letterboxes the drawing once
+  // the card is wider than ~760px (the full-width layout), leaving dead
+  // space on both sides. Matching viewBox width to the container makes
+  // the scale 1 and the chart fills the horizontal space properly.
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    const wrap = wrapRef.current
+    if (!wrap) return
+    const measure = () => setWidth(wrap.clientWidth)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(wrap)
+    return () => ro.disconnect()
+  }, [])
+
+  const vbW = width > 0 ? width : VB_W
+  const chartW = vbW - PADDING.left - PADDING.right
   const chartH = VB_H - PADDING.top - PADDING.bottom
 
   // x step can be fractional for 90-day views; points are positioned
@@ -154,7 +172,7 @@ function LineSvg({
       pt.y = e.clientY
       const local = pt.matrixTransform(ctm.inverse())
       const xVb = local.x
-      if (xVb < PADDING.left - 8 || xVb > VB_W - PADDING.right + 8) {
+      if (xVb < PADDING.left - 8 || xVb > vbW - PADDING.right + 8) {
         setHover(null)
         return
       }
@@ -184,7 +202,7 @@ function LineSvg({
       svg.removeEventListener('mouseleave', onLeave)
     }
     // xFor + yFor close over stepX, so stepX covers them.
-  }, [data, stepX])
+  }, [data, stepX, vbW])
 
   const hovered = hover !== null ? data[hover.idx] : null
   const hoverX = hover !== null ? xFor(hover.idx) : 0
@@ -197,7 +215,7 @@ function LineSvg({
     <div ref={wrapRef} className="relative w-full">
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${VB_W} ${VB_H}`}
+        viewBox={`0 0 ${vbW} ${VB_H}`}
         className="h-[240px] w-full"
         role="img"
         aria-label={t('ariaLabel')}
@@ -209,7 +227,7 @@ function LineSvg({
             <g key={t}>
               <line
                 x1={PADDING.left}
-                x2={VB_W - PADDING.right}
+                x2={vbW - PADDING.right}
                 y1={y}
                 y2={y}
                 stroke="var(--border)"

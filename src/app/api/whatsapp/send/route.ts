@@ -11,6 +11,7 @@ import {
   validateSendMessageParams,
   SendMessageError,
 } from '@/lib/whatsapp/send-message'
+import { assertActive, planErrorResponse } from '@/lib/plans/guard'
 
 // The dashboard's outbound-send endpoint. It owns auth, per-user rate
 // limiting, and the two ways the UI targets a thread — an existing
@@ -40,6 +41,11 @@ export async function POST(request: Request) {
     if (!limit.success) {
       return rateLimitResponse(limit)
     }
+
+    // Plan enforcement (Part 3, flag 5): a chat reply is NOT a bulk message
+    // and never counts a limit, but expired mode blocks sending. Only the
+    // effective status is checked here; inbound and reading are untouched.
+    await assertActive(accountId, 'send')
 
     const body = await request.json()
     const {
@@ -182,6 +188,9 @@ export async function POST(request: Request) {
       throw err
     }
   } catch (error) {
+    // A plan/expiry denial carries its own structured 403 body (Part 3).
+    const planRes = planErrorResponse(error)
+    if (planRes) return planRes
     // requireRole throws Unauthorized/Forbidden; toErrorResponse maps
     // those to 401/403 and collapses anything else to a generic 500.
     console.error('Error in WhatsApp send POST:', error)

@@ -33,6 +33,11 @@
 
 import { requireApiKey } from '@/lib/auth/api-context';
 import { ok, fail, toApiErrorResponse } from '@/lib/api/v1/respond';
+import {
+  checkLimit,
+  getEntitlements,
+  incrementUsage,
+} from '@/lib/plans/entitlements';
 import { resolveConversationByPhone } from '@/lib/whatsapp/resolve-conversation';
 import {
   sendMessageToConversation,
@@ -95,6 +100,20 @@ export async function POST(request: Request) {
       interactivePayload,
     });
 
+    // Plan enforcement (Part 3/4): expired accounts cannot send. A
+    // template send additionally consumes the bulk-message quota (a plain
+    // text reply is a conversation reply and does not count).
+    const ent = await getEntitlements(ctx.accountId);
+    if (ent.effectiveStatus === 'expired') {
+      return fail('subscription_expired', 'Subscription expired — renew to send messages.', 403);
+    }
+    if (type === 'template') {
+      const bulk = await checkLimit(ctx.accountId, 'bulk_messages', 1);
+      if (!bulk.allowed) {
+        return fail(bulk.reason ?? 'forbidden', 'Bulk message limit reached', 403);
+      }
+    }
+
     // Find-or-create the conversation for this phone, then send. Both
     // steps share `SendMessageError`, so one catch maps the whole
     // pipeline to the envelope.
@@ -126,6 +145,10 @@ export async function POST(request: Request) {
             : null,
       }
     );
+
+    if (type === 'template') {
+      await incrementUsage(ctx.accountId, 'bulk_messages', 1);
+    }
 
     return ok(
       {

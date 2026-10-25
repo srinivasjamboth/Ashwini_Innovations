@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Broadcast, BroadcastRecipient, RecipientStatus } from '@/types';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -34,6 +35,8 @@ import {
   Trash2,
   PlayCircle,
   RotateCcw,
+  CalendarClock,
+  XCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -41,6 +44,13 @@ import {
   getRecipientStatus,
 } from '@/lib/broadcast-status';
 import { useTranslations } from 'next-intl';
+import {
+  formatScheduledInZone,
+  getLocalTimeZone,
+  getTimeZoneOptions,
+  ScheduleTimeError,
+  utcToZonedParts,
+} from '@/lib/whatsapp/schedule-time';
 
 interface StatCardProps {
   label: string;
@@ -163,6 +173,14 @@ export default function BroadcastDetailPage() {
   const [resumingScope, setResumingScope] = useState<
     'pending' | 'failed' | null
   >(null);
+  // ---- Scheduling controls (scheduled broadcasts only) ----
+  const [showReschedule, setShowReschedule] = useState(false);
+  const [resDate, setResDate] = useState('');
+  const [resTime, setResTime] = useState('');
+  const [resTz, setResTz] = useState('UTC');
+  const [schedulingBusy, setSchedulingBusy] = useState<'cancel' | 'reschedule' | null>(
+    null,
+  );
 
   const fetchData = useCallback(async () => {
     try {
@@ -298,6 +316,87 @@ export default function BroadcastDetailPage() {
     router.push('/broadcasts');
   }
 
+  /**
+   * Cancel a scheduled broadcast before it fires. Server guards the
+   * transition to status='scheduled', so a race with the scheduler cron
+   * (which has already flipped it to 'sending') returns 409 rather than
+   * pretending it un-sent delivered messages.
+   */
+  async function handleCancel() {
+    setSchedulingBusy('cancel');
+    try {
+      const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}/cancel`, {
+        method: 'POST',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(
+          t('toastCancelFailed', { error: payload?.error || `HTTP ${res.status}` }),
+        );
+        return;
+      }
+      toast.success(t('toastCancelled'));
+      await fetchData();
+    } finally {
+      setSchedulingBusy(null);
+    }
+  }
+
+  /** Open the inline reschedule editor, prefilled from the current plan. */
+  function openReschedule() {
+    if (!broadcast?.scheduled_at) return;
+    const zone = broadcast.scheduled_tz || getLocalTimeZone();
+    const parts = utcToZonedParts(broadcast.scheduled_at, zone);
+    setResDate(parts.date);
+    setResTime(parts.time);
+    setResTz(zone);
+    setShowReschedule(true);
+  }
+
+  /**
+   * Move a scheduled broadcast to a new time. Sends the wall-clock parts
+   * + zone and lets the server convert (single source of DST truth, the
+   * tested schedule-time helper), so the browser and the eventual send
+   * can never disagree on the instant.
+   */
+  async function handleReschedule() {
+    if (!resDate || !resTime) {
+      toast.error(t('rescheduleIncomplete'));
+      return;
+    }
+    setSchedulingBusy('reschedule');
+    try {
+      const res = await fetch(
+        `/api/whatsapp/broadcast/${broadcastId}/reschedule`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: resDate, time: resTime, timezone: resTz }),
+        },
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(
+          t('toastRescheduleFailed', {
+            error: payload?.error || `HTTP ${res.status}`,
+          }),
+        );
+        return;
+      }
+      toast.success(t('toastRescheduled'));
+      setShowReschedule(false);
+      await fetchData();
+    } catch (err) {
+      toast.error(
+        t('toastRescheduleFailed', {
+          error: err instanceof ScheduleTimeError ? err.message : 'Unknown error',
+        }),
+      );
+    } finally {
+      setSchedulingBusy(null);
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex h-64 items-center justify-center">
@@ -408,6 +507,109 @@ export default function BroadcastDetailPage() {
           </Button>
         )}
       </div>
+
+      {/* Scheduled banner — only for a broadcast still waiting to fire.
+          Shows the chosen wall-clock time + zone and offers the two
+          pre-execution actions: reschedule and cancel. The server guards
+          both with a status='scheduled' precondition. */}
+      {broadcast.status === 'scheduled' && (
+        <div className="space-y-3 rounded-xl border border-blue-500/30 bg-blue-500/5 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <CalendarClock className="h-4 w-4 text-blue-400" />
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  {t('scheduledFor')}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {broadcast.scheduled_at
+                    ? formatScheduledInZone(
+                        broadcast.scheduled_at,
+                        broadcast.scheduled_tz ?? undefined,
+                      )
+                    : '-'}
+                  {broadcast.scheduled_tz ? ` · ${broadcast.scheduled_tz}` : ''}
+                </p>
+              </div>
+            </div>
+            {!showReschedule && (
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={openReschedule}
+                  disabled={schedulingBusy !== null}
+                  className="border-border text-muted-foreground hover:bg-muted"
+                >
+                  <CalendarClock className="h-3.5 w-3.5" />
+                  {t('reschedule')}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleCancel}
+                  disabled={schedulingBusy !== null}
+                  className="border-red-500/30 bg-transparent text-red-400 hover:bg-red-500/10"
+                >
+                  {schedulingBusy === 'cancel' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <XCircle className="h-3.5 w-3.5" />
+                  )}
+                  {t('cancelSchedule')}
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {showReschedule && (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <Input
+                type="date"
+                value={resDate}
+                onChange={(e) => setResDate(e.target.value)}
+                className="border-border bg-muted text-foreground"
+              />
+              <Input
+                type="time"
+                value={resTime}
+                onChange={(e) => setResTime(e.target.value)}
+                className="border-border bg-muted text-foreground"
+              />
+              <select
+                value={resTz}
+                onChange={(e) => setResTz(e.target.value)}
+                className="h-9 rounded-md border border-border bg-muted px-3 text-sm text-foreground"
+              >
+                {getTimeZoneOptions().map((z) => (
+                  <option key={z} value={z}>
+                    {z}
+                  </option>
+                ))}
+              </select>
+              <div className="flex items-center gap-2 sm:col-span-3">
+                <Button size="sm" onClick={handleReschedule} disabled={schedulingBusy !== null}>
+                  {schedulingBusy === 'reschedule' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <CalendarClock className="h-3.5 w-3.5" />
+                  )}
+                  {t('confirmReschedule')}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowReschedule(false)}
+                  disabled={schedulingBusy !== null}
+                  className="border-border text-muted-foreground hover:bg-muted"
+                >
+                  {t('cancel')}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Resume / retry (issue #472). Only rendered when there is
           actually something outstanding. */}

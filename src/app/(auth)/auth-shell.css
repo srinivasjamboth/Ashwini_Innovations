@@ -176,7 +176,11 @@
 }
 
 .auth-panel-text {
-    margin: 0;
+    /* Cap the line length so the copy wraps well inside the blue half —
+       without it the last words run under the white curve and the white
+       text disappears against it. */
+    margin: 0 auto;
+    max-width: 26rem;
     font-size: 1.05rem;
     line-height: 1.65;
     color: var(--a-light);

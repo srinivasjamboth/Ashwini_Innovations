@@ -5,7 +5,6 @@ import { toast } from 'sonner';
 import {
   Eye,
   EyeOff,
-  Copy,
   CheckCircle2,
   XCircle,
   Loader2,
@@ -25,13 +24,22 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Switch } from '@/components/ui/switch';
 import { SettingsPanelHead } from './settings-panel-head';
 import { WhatsAppEmbeddedSignup } from './whatsapp-embedded-signup';
+import { WhatsAppStatusCard } from './whatsapp-status-card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Accordion,
   AccordionItem,
   AccordionTrigger,
   AccordionContent,
 } from '@/components/ui/accordion';
-import type { WhatsAppConfig as WhatsAppConfigType } from '@/types';
+import type { WhatsAppConfig as WhatsAppConfigType, WhatsAppPhoneNumber } from '@/types';
 
 const MASKED_TOKEN = '••••••••••••••••';
 
@@ -59,6 +67,16 @@ type WabaSubscription = {
   subscribed: boolean | null;
   app_id_match: boolean | null;
   error?: string;
+};
+// phone_info as GET /api/whatsapp/config returns it (MetaPhoneInfo).
+// Mirrored locally on purpose — importing the server-side type would
+// drag the whole meta-api module into the client bundle.
+type PhoneInfo = {
+  id?: string;
+  display_phone_number?: string;
+  verified_name?: string;
+  quality_rating?: string;
+  name_status?: string;
 };
 
 export function WhatsAppConfig() {
@@ -91,6 +109,18 @@ export function WhatsAppConfig() {
   const [statusMeta, setStatusMeta] = useState<MetaErrorMeta | null>(null);
   const [saveFailure, setSaveFailure] = useState<MetaFailure | null>(null);
   const [wabaSubscription, setWabaSubscription] = useState<WabaSubscription | null>(null);
+  // Live account metadata from the connection-status endpoint — feeds
+  // the connected-state status card (business name, number, approval).
+  const [phoneInfo, setPhoneInfo] = useState<PhoneInfo | null>(null);
+  // Full synced WABA number catalog (migration 047) — every number
+  // Meta lists under the connected account, not just the active one.
+  // Comes in on the GET /api/whatsapp/config payload; refreshed by the
+  // sync endpoint when Refresh status runs.
+  const [phoneNumbers, setPhoneNumbers] = useState<WhatsAppPhoneNumber[]>([]);
+  const [switchingActiveId, setSwitchingActiveId] = useState<string | null>(null);
+  const [refreshingStatus, setRefreshingStatus] = useState(false);
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   // Guards against re-hydrating the form when the load effect below
   // re-runs for reasons unrelated to actually switching accounts —
   // e.g. Supabase's onAuthStateChange fires a token refresh (new
@@ -135,11 +165,6 @@ export function WhatsAppConfig() {
   };
   const [registrationProbe, setRegistrationProbe] =
     useState<RegistrationProbe | null>(null);
-
-  const webhookUrl =
-    typeof window !== 'undefined'
-      ? `${window.location.origin}/api/whatsapp/webhook`
-      : '';
 
   // Embedded Signup is only offered when the client has both public
   // Meta ids. When unset the "Connect with Meta" card renders nothing
@@ -209,16 +234,22 @@ export function WhatsAppConfig() {
             setStatusMessage('');
             setStatusMeta(null);
             setWabaSubscription(payload.waba_subscription ?? null);
+            setPhoneInfo(payload.phone_info ?? null);
+            setPhoneNumbers(payload.phone_numbers ?? []);
           } else {
             setConnectionStatus('disconnected');
             setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
             setStatusMessage(payload.message || '');
             setStatusMeta(payload.meta ?? null);
             setWabaSubscription(null);
+            setPhoneInfo(null);
+            setPhoneNumbers([]);
           }
         } catch (err) {
           console.error('Health check failed:', err);
           setConnectionStatus('disconnected');
+          setPhoneInfo(null);
+          setPhoneNumbers([]);
         }
       } else {
         setConnectionStatus('disconnected');
@@ -226,6 +257,8 @@ export function WhatsAppConfig() {
         setStatusMessage('');
         setStatusMeta(null);
         setWabaSubscription(null);
+        setPhoneInfo(null);
+        setPhoneNumbers([]);
       }
     } catch (err) {
       console.error('fetchConfig error:', err);
@@ -409,6 +442,8 @@ export function WhatsAppConfig() {
         setStatusMessage('');
         setStatusMeta(null);
         setWabaSubscription(payload.waba_subscription ?? null);
+        setPhoneInfo(payload.phone_info ?? null);
+        setPhoneNumbers(payload.phone_numbers ?? []);
         toast.success(
           payload.phone_info?.verified_name
             ? t('connectedTo', { name: payload.phone_info.verified_name })
@@ -420,11 +455,14 @@ export function WhatsAppConfig() {
         setStatusMessage(payload.message || '');
         setStatusMeta(payload.meta ?? null);
         setWabaSubscription(null);
+        setPhoneInfo(null);
+        setPhoneNumbers([]);
         toast.error(payload.message || t('apiConnectionFailed'), { duration: 10000 });
       }
     } catch (err) {
       console.error('Test connection error:', err);
       setConnectionStatus('disconnected');
+      setPhoneNumbers([]);
       toast.error(t('connectionTestFailed'));
     } finally {
       setTesting(false);
@@ -486,6 +524,8 @@ export function WhatsAppConfig() {
       setStatusMeta(null);
       setSaveFailure(null);
       setWabaSubscription(null);
+      setPhoneInfo(null);
+      setPhoneNumbers([]);
     } catch (err) {
       console.error('Reset error:', err);
       toast.error(t('resetFailed'));
@@ -494,9 +534,144 @@ export function WhatsAppConfig() {
     }
   }
 
-  function handleCopyWebhookUrl() {
-    navigator.clipboard.writeText(webhookUrl);
-    toast.success(t('webhookCopied'));
+  // "Refresh status" on the status card — re-runs the same health
+  // check GET the page already uses and updates the card in place.
+  // No page reload, no new endpoint. Admins additionally fire the
+  // number-catalog sync so numbers added/removed in Meta Business
+  // Manager since the last connect are picked up (migration 047); a
+  // failed sync never touches the connection status shown here.
+  async function handleRefreshStatus() {
+    setRefreshingStatus(true);
+    try {
+      const res = await fetch('/api/whatsapp/config', { method: 'GET' });
+      const payload = await res.json();
+      if (payload.connected) {
+        setConnectionStatus('connected');
+        setResetReason(null);
+        setStatusMessage('');
+        setStatusMeta(null);
+        setWabaSubscription(payload.waba_subscription ?? null);
+        setPhoneInfo(payload.phone_info ?? null);
+        setPhoneNumbers(payload.phone_numbers ?? []);
+        if (canEditSettings) {
+          try {
+            const syncRes = await fetch('/api/whatsapp/phone-numbers', { method: 'POST' });
+            const sync = await syncRes.json().catch(() => ({}));
+            if (syncRes.ok && Array.isArray(sync.phone_numbers)) {
+              setPhoneNumbers(sync.phone_numbers);
+              // Diagnostic feedback: how many live numbers were found
+              // and across how many WhatsApp Business Accounts Meta
+              // actually answered. "1 account" after expecting more
+              // means the token could not enumerate the portfolio.
+              const liveCount = sync.phone_numbers.filter(
+                (n: { removed_at?: string | null }) => !n.removed_at,
+              ).length;
+              toast.info(
+                t('statusCard.syncSummary', {
+                  numbers: liveCount,
+                  wabas: typeof sync.wabas_scanned === 'number' ? sync.wabas_scanned : 1,
+                }),
+                { duration: 8000 },
+              );
+            } else if (!syncRes.ok) {
+              toast.error(sync.error || t('statusCard.syncNumbersFailed'), { duration: 8000 });
+            }
+          } catch (err) {
+            console.error('Phone number sync failed:', err);
+          }
+        }
+      } else {
+        // Meta says the credentials no longer work — mirror exactly
+        // what fetchConfig would have settled on.
+        setConnectionStatus('disconnected');
+        setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
+        setStatusMessage(payload.message || '');
+        setStatusMeta(payload.meta ?? null);
+        setWabaSubscription(null);
+        setPhoneInfo(null);
+        setPhoneNumbers([]);
+      }
+    } catch (err) {
+      console.error('Refresh status failed:', err);
+      toast.error(t('connectionTestFailed'));
+    } finally {
+      setRefreshingStatus(false);
+    }
+  }
+
+  // "Set as active" on a synced number — POST /api/whatsapp/phone-
+  // numbers/active flips is_active in the catalog and mirrors the id
+  // onto whatsapp_config.phone_number_id, the field sends and the
+  // inbound webhook already key on. Then a full refetch: the health
+  // check's phone_info becomes the NEW active number's details, so
+  // the card above follows the switch.
+  async function handleSetActiveNumber(phoneNumberId: string) {
+    if (switchingActiveId) return;
+    setSwitchingActiveId(phoneNumberId);
+    try {
+      const res = await fetch('/api/whatsapp/phone-numbers/active', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone_number_id: phoneNumberId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || t('statusCard.setActiveFailed'), { duration: 10000 });
+        return;
+      }
+      toast.success(
+        t('statusCard.setActiveDone', { number: phoneNumberId }),
+      );
+      if (accountId) await fetchConfig(accountId);
+    } catch (err) {
+      console.error('Set active number failed:', err);
+      toast.error(t('statusCard.setActiveFailed'));
+    } finally {
+      setSwitchingActiveId(null);
+    }
+  }
+
+  // Disconnect — new POST /api/whatsapp/disconnect. Clears the stored
+  // credentials only; chats, contacts, templates and message logs are
+  // untouched (the endpoint removes just the whatsapp_config row).
+  async function handleDisconnect() {
+    try {
+      setDisconnecting(true);
+      const res = await fetch('/api/whatsapp/disconnect', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        // Failure keeps the connected state exactly as it was.
+        toast.error(data.error || t('disconnect.toastFailed'), { duration: 10000 });
+        return;
+      }
+
+      toast.success(t('disconnect.toastDone'));
+      setDisconnectOpen(false);
+      setConfig(null);
+      setPhoneNumberId('');
+      setWabaId('');
+      setAccessToken('');
+      setVerifyToken('');
+      setPin('');
+      setTokenEdited(false);
+      setVerifyEdited(false);
+      setMirrorMedia(true);
+      setConnectionStatus('disconnected');
+      setResetReason(null);
+      setStatusMessage('');
+      setStatusMeta(null);
+      setSaveFailure(null);
+      setWabaSubscription(null);
+      setPhoneInfo(null);
+      setPhoneNumbers([]);
+      setRegistrationProbe(null);
+    } catch (err) {
+      console.error('Disconnect error:', err);
+      toast.error(t('disconnect.toastFailed'));
+    } finally {
+      setDisconnecting(false);
+    }
   }
 
   if (loading) {
@@ -617,6 +792,28 @@ export function WhatsAppConfig() {
           </Alert>
         )}
 
+        {/* Connected-state status card — business account + number, and
+            a simple connected/not-connected indicator (no Meta name-
+            approval noise). Fed by phone_info from GET /api/whatsapp/config,
+            so it appears for both the Embedded Signup and manual paths. */}
+        {connectionStatus === 'connected' && (
+          <WhatsAppStatusCard
+            businessName={phoneInfo?.verified_name ?? ''}
+            phoneNumber={
+              phoneInfo?.display_phone_number ?? config?.phone_number_id ?? ''
+            }
+            connected={connectionStatus === 'connected'}
+            refreshing={refreshingStatus}
+            onRefresh={handleRefreshStatus}
+            disconnecting={disconnecting}
+            onDisconnect={() => setDisconnectOpen(true)}
+            numbers={phoneNumbers}
+            canSwitch={canEditSettings}
+            switchingId={switchingActiveId}
+            onSetActive={handleSetActiveNumber}
+          />
+        )}
+
         {/* Connection Status */}
         <Alert className="bg-card border-border">
           <div className="flex items-center gap-2">
@@ -654,12 +851,12 @@ export function WhatsAppConfig() {
           {connectionStatus !== 'connected' && statusMeta && renderMetaDetails(statusMeta)}
         </Alert>
 
-        {/* Registration Status — the "is it actually live?" check.
-            Credentials being valid is necessary but not sufficient;
-            without a successful /register call the number won't
-            receive inbound events. Surface this dimension separately
-            so users don't trust a misleading green banner. */}
-        {config && (
+        {/* Registration Status. We surface ONLY the positive
+            "Registered" confirmation here — the "Not registered" amber
+            warning is intentionally never shown (per owner request: the
+            connection status card above already tells them whether the
+            number is live, and the registration warning was noise). */}
+        {config && isRegistered && (
           <Alert
             className={
               isRegistered
@@ -833,81 +1030,6 @@ export function WhatsAppConfig() {
                 </p>
               )}
             </div>
-
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">{t('webhookVerifyToken')}</Label>
-              <Input
-                placeholder={t('webhookVerifyTokenPlaceholder')}
-                value={verifyToken}
-                onChange={(e) => {
-                  setVerifyToken(e.target.value);
-                  setVerifyEdited(true);
-                }}
-                onFocus={() => {
-                  if (verifyToken === MASKED_TOKEN) {
-                    setVerifyToken('');
-                    setVerifyEdited(true);
-                  }
-                }}
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
-              />
-              <p className="text-xs text-muted-foreground">
-                {config?.verify_token && !verifyEdited
-                  ? t('webhookVerifyTokenSaved')
-                  : t('webhookVerifyTokenHint')}
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">
-                {t('twoStepPin')}
-                <span className="ml-1 text-muted-foreground">{t('optional')}</span>
-              </Label>
-              <Input
-                type="text"
-                inputMode="numeric"
-                maxLength={6}
-                placeholder={t('pinPlaceholder')}
-                value={pin}
-                onChange={(e) =>
-                  setPin(e.target.value.replace(/\D/g, '').slice(0, 6))
-                }
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground tracking-widest"
-              />
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                <span dangerouslySetInnerHTML={{ __html: t('pinHint') }} />
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Webhook URL */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-foreground">{t('webhookTitle')}</CardTitle>
-            <CardDescription className="text-muted-foreground">
-              {t('webhookDesc')}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">{t('webhookUrl')}</Label>
-              <div className="flex gap-2">
-                <Input
-                  readOnly
-                  value={webhookUrl}
-                  className="bg-muted border-border text-muted-foreground font-mono text-sm"
-                />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={handleCopyWebhookUrl}
-                  className="shrink-0 border-border text-muted-foreground hover:text-foreground hover:bg-muted"
-                >
-                  <Copy className="size-4" />
-                </Button>
-              </div>
-            </div>
           </CardContent>
         </Card>
 
@@ -1003,6 +1125,37 @@ export function WhatsAppConfig() {
             </Button>
           )}
         </div>
+
+        {/* Disconnect confirm — reuses the app's shared Dialog. The
+            destructive action lives inside, guarded by explicit
+            confirmation. */}
+        <Dialog open={disconnectOpen} onOpenChange={(open) => { if (!disconnecting) setDisconnectOpen(open); }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{t('disconnect.confirmTitle')}</DialogTitle>
+              <DialogDescription>{t('disconnect.confirmDesc')}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setDisconnectOpen(false)}
+                disabled={disconnecting}
+              >
+                {t('disconnect.cancel')}
+              </Button>
+              <Button variant="destructive" onClick={handleDisconnect} disabled={disconnecting}>
+                {disconnecting ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    {t('disconnect.disconnecting')}
+                  </>
+                ) : (
+                  t('disconnect.confirmButton')
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
 
       {/* Setup Instructions Sidebar */}
@@ -1066,23 +1219,6 @@ export function WhatsAppConfig() {
                 </AccordionContent>
               </AccordionItem>
 
-              <AccordionItem className="border-border">
-                <AccordionTrigger className="text-muted-foreground hover:text-foreground hover:no-underline">
-                  <span className="flex items-center gap-2">
-                    <span className="flex size-5 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">4</span>
-                    {t('step4')}
-                  </span>
-                </AccordionTrigger>
-                <AccordionContent className="text-muted-foreground">
-                  <ol className="list-decimal list-inside space-y-1 text-sm">
-                    <li>{t('step4_1')}</li>
-                    <li>{t('step4_2')}</li>
-                    <li dangerouslySetInnerHTML={{ __html: t.raw('step4_3') }} />
-                    <li dangerouslySetInnerHTML={{ __html: t.raw('step4_4') }} />
-                    <li>{t('step4_5')}</li>
-                  </ol>
-                </AccordionContent>
-              </AccordionItem>
             </Accordion>
 
             <div className="mt-4 pt-4 border-t border-border">

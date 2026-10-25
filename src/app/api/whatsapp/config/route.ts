@@ -22,6 +22,7 @@ import {
 } from '@/lib/whatsapp/waba-pairing'
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 import { resolveVerifyTokenForSave } from '@/lib/whatsapp/verify-token'
+import { clearAccountPhoneNumbers, syncAccountPhoneNumbers } from '@/lib/whatsapp/phone-numbers'
 
 /**
  * Resolve the caller's account_id from their profile. Inlined here
@@ -165,13 +166,24 @@ export async function GET() {
       )
     }
 
-    // Validate credentials against Meta
+    // Validate credentials against Meta. Ask for the extra `name_status`
+    // field the settings status card shows; if the Graph version behind
+    // this app rejects the unknown field, retry the exact pre-existing
+    // query so the health check itself can never regress.
     let phoneInfo
     try {
-      phoneInfo = await verifyPhoneNumber({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
-      })
+      try {
+        phoneInfo = await verifyPhoneNumber({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          extraFields: ['name_status'],
+        })
+      } catch {
+        phoneInfo = await verifyPhoneNumber({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+        })
+      }
     } catch (err) {
       const explained = explainMetaError(err, 'verify_number', {
         phoneNumberId: config.phone_number_id,
@@ -220,10 +232,30 @@ export async function GET() {
       }
     }
 
+    // Catalog for the status card. Never fatal.
+    let phoneNumbers: unknown[] = []
+    try {
+      const { data: catalog, error: catalogError } = await supabase
+        .from('whatsapp_phone_numbers')
+        .select('*')
+        .eq('account_id', accountId)
+        .order('is_active', { ascending: false })
+        .order('display_phone_number', { ascending: true, nullsFirst: false })
+      if (catalogError) console.error('Error fetching phone number catalog:', catalogError)
+      phoneNumbers = catalog ?? []
+    } catch (err) {
+      console.error('Phone number catalog read failed:', err)
+    }
+
     return NextResponse.json({
       connected: true,
       phone_info: phoneInfo,
       waba_subscription: wabaSubscription,
+      // Synced WABA number catalog (migration 047) — what the status
+      // card lists for "set as active". Read with the user's session
+      // (RLS allows any member). Best-effort: a catalog failure must
+      // never turn a healthy connection into an error.
+      phone_numbers: phoneNumbers,
     })
   } catch (error) {
     console.error('Error in WhatsApp config GET:', error)
@@ -548,6 +580,29 @@ export async function POST(request: Request) {
       }
     }
 
+    // Step 3: sync the FULL list of numbers under the WABA into the
+    // catalog (migration 047). The session/pasted number above is only
+    // one of potentially many — pre-existing verified numbers must show
+    // up too, for both the embedded-signup and manual paths, since
+    // every connect funnels through this handler. Soft failure by
+    // design: the connection itself is already saved and valid; a sync
+    // hiccup must never turn a good save into an error.
+    let syncedNumbers: unknown[] | null = null
+    let phone_numbers_empty = false
+    if (waba_id) {
+      const sync = await syncAccountPhoneNumbers({
+        admin: supabaseAdmin(),
+        accountId,
+        wabaId: waba_id,
+        accessToken: access_token,
+        activePhoneNumberId: phone_number_id,
+      })
+      if (sync.ok) {
+        syncedNumbers = sync.numbers
+        phone_numbers_empty = sync.empty
+      }
+    }
+
     if (registrationError) {
       // Save succeeded but the number isn't actually live. Return
       // 200 with a structured error so the UI can show the specific
@@ -560,6 +615,8 @@ export async function POST(request: Request) {
         error: registrationError,
         meta: registrationMeta,
         phone_info: phoneInfo,
+        phone_numbers: syncedNumbers,
+        phone_numbers_empty,
       })
     }
 
@@ -573,6 +630,8 @@ export async function POST(request: Request) {
       // rather than claiming the number is fully live.
       registration_skipped: registrationSkipped,
       phone_info: phoneInfo,
+      phone_numbers: syncedNumbers,
+      phone_numbers_empty,
     })
   } catch (error) {
     console.error('Error in WhatsApp config POST:', error)
@@ -620,6 +679,11 @@ export async function DELETE() {
         { status: 500 }
       )
     }
+
+    // Disconnecting clears EVERY synced number, not just the active
+    // one (migration 047 catalog). Logged, never fatal — the config
+    // row is already gone.
+    await clearAccountPhoneNumbers(supabase, accountId)
 
     return NextResponse.json({ success: true })
   } catch (error) {

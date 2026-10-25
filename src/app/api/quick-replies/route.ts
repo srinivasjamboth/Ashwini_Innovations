@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getCurrentAccount, requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
+import { checkLimit } from '@/lib/plans/entitlements'
 
 // Quick replies — reusable snippets (plain text or a saved interactive
 // message) shared across the account. GET lists; POST creates. Mirrors
@@ -33,6 +34,12 @@ export async function POST(request: Request) {
 
   const body = await request.json().catch(() => null)
   if (!body) return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+
+  // Plan enforcement (Part 4): a quick reply is a counted, gated resource.
+  // checkLimit is the SAME helper the DB guard triggers mirror, and returns
+  // the structured 403 body on denial.
+  const limit = await checkLimit(ctx.accountId, 'quick_replies')
+  if (!limit.allowed) return NextResponse.json(limit, { status: 403 })
 
   const title = typeof body.title === 'string' ? body.title.trim() : ''
   const kind = body.kind === 'interactive' ? 'interactive' : 'text'

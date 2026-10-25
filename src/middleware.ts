@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { ADMIN_LOGIN_PATH, ADMIN_SESSION_COOKIE } from '@/lib/admin/constants'
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })
@@ -40,6 +41,64 @@ export async function middleware(request: NextRequest) {
       response.cookies.set(cookie)
     })
     return response
+  }
+
+  // Super Admin area (/ashwini-control). Two jobs here, both at the
+  // edge of the admin subtree:
+  //   1. shape the denial for logged-out visitors — they bounce to
+  //      the admin login. (Owner-vs-customer authorization is NOT
+  //      decided here — requireOwner() in lib/admin/guard is the
+  //      authority, enforced again in every layout/page/API; a
+  //      signed-in non-owner passing this check still gets a 404.)
+  //   2. stamp no-index / no-cache / framing headers on EVERY admin
+  //      response, including the login page and admin API routes.
+  //
+  // The gate keys on the admin MARKER cookie, not the Supabase session:
+  // an owner admin session no longer carries a Supabase auth cookie at
+  // all (that would leak into the client app), so the marker is the only
+  // honest "this browser is in the admin area" signal. Presence is enough
+  // here — validity/idle/expiry is enforced again by requireOwner().
+  if (
+    request.nextUrl.pathname === '/ashwini-control' ||
+    request.nextUrl.pathname.startsWith('/ashwini-control/')
+  ) {
+    const isAdminLogin = request.nextUrl.pathname === ADMIN_LOGIN_PATH
+    const hasAdminMarker = request.cookies.has(ADMIN_SESSION_COOKIE)
+    let adminResponse: NextResponse
+    if (!hasAdminMarker && !isAdminLogin) {
+      const url = request.nextUrl.clone()
+      url.pathname = ADMIN_LOGIN_PATH
+      url.search = ''
+      adminResponse = withRefreshedCookies(NextResponse.redirect(url))
+    } else {
+      adminResponse = supabaseResponse
+    }
+    adminResponse.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet')
+    adminResponse.headers.set('Cache-Control', 'no-store, max-age=0')
+    adminResponse.headers.set('Pragma', 'no-cache')
+    adminResponse.headers.set('X-Frame-Options', 'DENY')
+    adminResponse.headers.set('X-Content-Type-Options', 'nosniff')
+    adminResponse.headers.set('Referrer-Policy', 'no-referrer')
+    adminResponse.headers.set('Content-Security-Policy', "frame-ancestors 'none'")
+    return adminResponse
+  }
+
+  // The platform owner's credentials belong to the Super Admin Dashboard
+  // ONLY — never the client app. If an owner somehow presents a client
+  // Supabase session on a main-app route, drop that session (clear the
+  // shared sb-* auth cookies) and send them to the admin login. Fail-safe:
+  // when ADMIN_OWNER_USER_ID isn't visible to this runtime the check is a
+  // no-op, so it can never lock out ordinary customers.
+  const ownerId = process.env.ADMIN_OWNER_USER_ID?.trim()
+  if (user && ownerId && user.id === ownerId) {
+    const url = request.nextUrl.clone()
+    url.pathname = ADMIN_LOGIN_PATH
+    url.search = ''
+    const res = NextResponse.redirect(url)
+    for (const c of request.cookies.getAll()) {
+      if (c.name.startsWith('sb-')) res.cookies.set(c.name, '', { path: '/', maxAge: 0 })
+    }
+    return res
   }
 
   // Auth pages - redirect to dashboard if already logged in.

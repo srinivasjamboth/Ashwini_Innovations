@@ -189,7 +189,7 @@ export default function BroadcastsPage() {
         </div>
         <GatedButton
           canAct={canCreate}
-          gateReason="create broadcasts"
+          gateReason="create broadcasts" planFeature="bulk_messages"
           onClick={() => router.push('/broadcasts/new')}
           className="bg-primary text-primary-foreground hover:bg-primary/90"
         >
@@ -207,7 +207,7 @@ export default function BroadcastsPage() {
           </p>
           <GatedButton
             canAct={canCreate}
-            gateReason="create broadcasts"
+            gateReason="create broadcasts" planFeature="bulk_messages"
             onClick={() => router.push('/broadcasts/new')}
             className="mt-4 bg-primary text-primary-foreground hover:bg-primary/90"
           >
@@ -277,7 +277,18 @@ export default function BroadcastsPage() {
                       </span>
                     </TableCell>
                     <TableCell className="hidden text-muted-foreground sm:table-cell">
-                      {new Date(broadcast.created_at).toLocaleDateString()}
+                      {broadcast.status === 'scheduled' && broadcast.scheduled_at ? (
+                        <span className="flex flex-col">
+                          <span className="text-blue-400">
+                            {new Date(broadcast.scheduled_at).toLocaleString()}
+                          </span>
+                          <span className="text-[11px] text-muted-foreground/70">
+                            {t('scheduledColumnHint')}
+                          </span>
+                        </span>
+                      ) : (
+                        new Date(broadcast.created_at).toLocaleDateString()
+                      )}
                     </TableCell>
                   </TableRow>
                 );

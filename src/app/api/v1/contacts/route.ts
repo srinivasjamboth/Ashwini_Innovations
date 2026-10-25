@@ -10,6 +10,7 @@
 
 import { requireApiKey } from '@/lib/auth/api-context';
 import { ok, okList, fail, toApiErrorResponse } from '@/lib/api/v1/respond';
+import { checkLimit } from '@/lib/plans/entitlements';
 import {
   parseListParams,
   keysetFilter,
@@ -108,6 +109,16 @@ export async function POST(request: Request) {
     const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
     if (!phone) {
       return fail('bad_request', "'phone' is required", 400);
+    }
+
+    // Plan enforcement (Part 4): a v1 contact create is a counted, gated
+    // resource. This route authenticates by API key (service-role client), so
+    // the DB guard trigger on `contacts` deliberately does NOT fire here
+    // (it bypasses service_role to keep inbound auto-create unblocked) —
+    // this is the authoritative check for the public-API path.
+    const seat = await checkLimit(ctx.accountId, 'contacts');
+    if (!seat.allowed) {
+      return fail(seat.reason ?? 'forbidden', 'Contact limit reached', 403);
     }
 
     const auditUserId = await resolveAuditUserId(ctx.supabase, ctx.accountId);

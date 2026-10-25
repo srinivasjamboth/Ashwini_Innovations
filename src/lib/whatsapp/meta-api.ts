@@ -23,6 +23,13 @@ export interface MetaPhoneInfo {
   display_phone_number: string
   verified_name?: string
   quality_rating?: string
+  /**
+   * Display-name approval status reported by Meta (e.g. APPROVED,
+   * PENDING, REJECTED). Additive only — Graph builds that reject the
+   * unknown field simply leave it undefined, see the fallback in
+   * GET /api/whatsapp/config.
+   */
+  name_status?: string
 }
 
 interface MetaErrorResponse {
@@ -113,6 +120,12 @@ async function throwMetaError(response: Response, fallback: string): Promise<nev
 export interface VerifyPhoneNumberArgs {
   phoneNumberId: string
   accessToken: string
+  /**
+   * Extra Graph fields to append to the default selection. Used to
+   * pull `name_status` for the settings status card without changing
+   * the base query every other caller depends on.
+   */
+  extraFields?: string[]
 }
 
 /**
@@ -122,8 +135,15 @@ export interface VerifyPhoneNumberArgs {
 export async function verifyPhoneNumber(
   args: VerifyPhoneNumberArgs
 ): Promise<MetaPhoneInfo> {
-  const { phoneNumberId, accessToken } = args
-  const url = `${META_API_BASE}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating`
+  const { phoneNumberId, accessToken, extraFields } = args
+  const fields = [
+    'id',
+    'display_phone_number',
+    'verified_name',
+    'quality_rating',
+    ...(extraFields ?? []),
+  ].join(',')
+  const url = `${META_API_BASE}/${phoneNumberId}?fields=${fields}`
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
@@ -189,6 +209,40 @@ export async function exchangeEmbeddedSignupCode(
     throw new Error('Embedded Signup code exchange returned no access token.')
   }
   return token
+}
+
+export interface DebugTokenScopesArgs {
+  appId: string
+  appSecret: string
+  accessToken: string
+}
+
+/**
+ * Ask Meta which permissions a token actually carries. debug_token is
+ * app-credentialled (app-id|app-secret as the access token), so this is
+ * trustworthy even when the user token itself is limited. Used purely
+ * as a diagnostic: "old numbers missing" is either a missing
+ * business_management grant (here) or app access to the other
+ * portfolios (Meta Business Manager), never silently something else.
+ */
+export async function debugTokenScopes(
+  args: DebugTokenScopesArgs,
+): Promise<string[]> {
+  const { appId, appSecret, accessToken } = args
+  const params = new URLSearchParams({
+    input_token: accessToken,
+    access_token: `${appId}|${appSecret}`,
+  })
+  const response = await fetch(`${META_API_BASE}/debug_token?${params.toString()}`, {
+    method: 'GET',
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = (await response.json()) as {
+    data?: { granted_scopes?: string[] }
+  }
+  return data.data?.granted_scopes ?? []
 }
 
 // ============================================================
@@ -307,6 +361,12 @@ export interface WabaPhoneNumber {
   id: string
   display_phone_number?: string
   verified_name?: string
+  /** GREEN | YELLOW | RED | UNKNOWN — Meta's own enum, stored verbatim. */
+  quality_rating?: string
+  /** VERIFIED | UNVERIFIED | NONE — Meta's own enum, stored verbatim. */
+  code_verification_status?: string
+  /** e.g. CLOUD_API | BUSINESS_API | ON_PREMISE — Meta's own enum. */
+  platform_type?: string
 }
 
 /**
@@ -325,7 +385,8 @@ export async function listWabaPhoneNumbers(
   const { wabaId, accessToken } = args
   const out: WabaPhoneNumber[] = []
   let url: string | undefined =
-    `${META_API_BASE}/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name&limit=100`
+    `${META_API_BASE}/${wabaId}/phone_numbers` +
+    '?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status,platform_type&limit=100'
   for (let page = 0; url && page < 5; page++) {
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -341,6 +402,119 @@ export async function listWabaPhoneNumbers(
     url = data.paging?.next
   }
   return out
+}
+
+// --------------------------------------------------
+// Business-portfolio discovery (multi-WABA support)
+// --------------------------------------------------
+//
+// Meta's Embedded Signup reports the ONE WABA the session finished on,
+// so a business whose older, already-verified numbers live under a
+// SIBLING WhatsApp Business Account in the same Business Portfolio looks
+// like it "has no numbers". These two edges let us walk the whole
+// portfolio:
+//
+//   GET /me/businesses                          → portfolios this token sees
+//   GET /{portfolio}/whatsapp_business_accounts → every WABA it owns
+//
+// Both are best-effort: the caller falls back to the single connected
+// WABA when the token lacks business_management scope or the call fails,
+// so a discovery error NEVER regresses the connection itself.
+
+export interface MetaBusinessRef {
+  id: string
+  name?: string
+}
+
+export interface MetaWabaRef {
+  id: string
+  name?: string
+}
+
+export interface ListAccessibleBusinessesArgs {
+  accessToken: string
+}
+
+/** Portfolios (business managers) the token can administer. GET /me/businesses. */
+export async function listAccessibleBusinesses(
+  args: ListAccessibleBusinessesArgs
+): Promise<MetaBusinessRef[]> {
+  const { accessToken } = args
+  const out: MetaBusinessRef[] = []
+  let url: string | undefined =
+    `${META_API_BASE}/me/businesses?fields=id,name&limit=100`
+  for (let page = 0; url && page < 5; page++) {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!response.ok) {
+      await throwMetaError(response, `Meta API error: ${response.status}`)
+    }
+    const data = (await response.json()) as {
+      data?: MetaBusinessRef[]
+      paging?: { next?: string }
+    }
+    out.push(...(data.data ?? []))
+    url = data.paging?.next
+  }
+  return out
+}
+
+export interface ListWabasForBusinessArgs {
+  businessId: string
+  accessToken: string
+}
+
+/** Every WhatsApp Business Account owned by a portfolio. */
+export async function listWabasForBusiness(
+  args: ListWabasForBusinessArgs
+): Promise<MetaWabaRef[]> {
+  const { businessId, accessToken } = args
+  const out: MetaWabaRef[] = []
+  let url: string | undefined =
+    `${META_API_BASE}/${businessId}/whatsapp_business_accounts?fields=id,name&limit=100`
+  for (let page = 0; url && page < 5; page++) {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!response.ok) {
+      await throwMetaError(response, `Meta API error: ${response.status}`)
+    }
+    const data = (await response.json()) as {
+      data?: MetaWabaRef[]
+      paging?: { next?: string }
+    }
+    out.push(...(data.data ?? []))
+    url = data.paging?.next
+  }
+  return out
+}
+
+export interface GetWabaBusinessArgs {
+  wabaId: string
+  accessToken: string
+}
+
+/**
+ * Fallback portfolio lookup: ask the connected WABA which business owns
+ * it. Used when /me/businesses is not available to the token but the WABA
+ * node still reports its parent portfolio.
+ */
+export async function getWabaBusiness(
+  args: GetWabaBusinessArgs
+): Promise<MetaBusinessRef[]> {
+  const { wabaId, accessToken } = args
+  const url = `${META_API_BASE}/${wabaId}?fields=business`
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = (await response.json()) as {
+    business?: { id?: string; name?: string }
+  }
+  return data.business?.id ? [{ id: data.business.id, name: data.business.name }] : []
 }
 
 export interface GetSubscribedAppsArgs {

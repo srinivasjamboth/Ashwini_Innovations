@@ -20,6 +20,7 @@
 import { NextResponse } from "next/server";
 
 import { requireRole, toErrorResponse } from "@/lib/auth/account";
+import { checkLimit as checkPlanLimit } from "@/lib/plans/entitlements";
 import {
   clampExpiryDays,
   generateInviteToken,
@@ -210,6 +211,12 @@ export async function POST(request: Request) {
       }
       label = trimmed === "" ? null : trimmed;
     }
+
+    // Plan enforcement (Part 4): team members are counted as active users +
+    // pending invitations (incl. the owner). Creating an invite that would
+    // push the account past its seat limit is blocked here.
+    const seats = await checkPlanLimit(ctx.accountId, "team_members");
+    if (!seats.allowed) return NextResponse.json(seats, { status: 403 });
 
     const { token, hash } = generateInviteToken();
     // Resolve the base URL before inserting so a misconfigured

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
+import { checkLimit } from '@/lib/plans/entitlements'
 
 export async function POST(
   _request: Request,
@@ -35,6 +36,11 @@ export async function POST(
     .maybeSingle()
   if (origErr) return NextResponse.json({ error: origErr.message }, { status: 500 })
   if (!original) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+  // Duplicating creates a NEW automation row, so it is a gated create
+  // (Part 4): enforce the plan's automation-flow limit before inserting.
+  const seat = await checkLimit(accountId, 'automation_flows')
+  if (!seat.allowed) return NextResponse.json(seat, { status: 403 })
 
   const { data: copy, error: copyErr } = await admin
     .from('automations')

@@ -691,7 +691,8 @@
       },
       "errorLoad": "Falha ao carregar os disparos",
       "broadcastInProgress": "Disparo em andamento",
-      "retry": "Tentar novamente"
+      "retry": "Tentar novamente",
+      "scheduledColumnHint": "Agendado para enviar"
     },
     "status": {
       "draft": "Rascunho",
@@ -699,6 +700,7 @@
       "sending": "Enviando",
       "sent": "Enviado",
       "failed": "Falhou",
+      "cancelled": "Cancelado",
       "pending": "Pendente",
       "delivered": "Entregue",
       "read": "Lida",
@@ -751,7 +753,16 @@
       "retryFailed": "Tentar novamente os que falharam ({count})",
       "toastResumeStarted": "Enviando para {count} destinatários em segundo plano.",
       "toastResumeStartedCapped": "Enviando para {count} destinatários em segundo plano. Outros {remaining} precisarão de mais uma execução.",
-      "toastResumeFailed": "Não foi possível retomar: {error}"
+      "toastResumeFailed": "Não foi possível retomar: {error}",
+      "scheduledFor": "Agendado para enviar",
+      "reschedule": "Reagendar",
+      "cancelSchedule": "Cancelar agendamento",
+      "confirmReschedule": "Salvar novo horário",
+      "rescheduleIncomplete": "Escolha primeiro data, hora e fuso horário.",
+      "toastCancelled": "Disparo agendado cancelado",
+      "toastCancelFailed": "Não foi possível cancelar: {error}",
+      "toastRescheduled": "Disparo reagendado",
+      "toastRescheduleFailed": "Não foi possível reagendar: {error}"
     },
     "new": {
       "title": "Novo disparo",
@@ -766,7 +777,8 @@
       "toastNotSignedIn": "Você não está conectado.",
       "toastNotLinked": "Seu perfil não está vinculado a uma conta.",
       "toastFailedDraft": "Falha ao salvar o rascunho: {error}",
-      "toastDraftSaved": "Rascunho salvo"
+      "toastDraftSaved": "Rascunho salvo",
+      "toastScheduled": "Disparo agendado"
     },
     "wizard": {
       "next": "Avançar",
@@ -874,7 +886,19 @@
         "estimatedReach": "Alcance estimado",
         "language": "Idioma",
         "confirmTitle": "Confirmar disparo",
-        "confirmDesc": "Você está prestes a enviar este disparo para <b>{count, number}</b> {count, plural, =1 {contato} other {contatos}} usando o modelo <b>{template}</b>. Esta ação não pode ser desfeita."
+        "confirmDesc": "Você está prestes a enviar este disparo para <b>{count, number}</b> {count, plural, =1 {contato} other {contatos}} usando o modelo <b>{template}</b>. Esta ação não pode ser desfeita.",
+        "when": "Quando",
+        "modeNow": "Enviar agora",
+        "modeSchedule": "Agendar",
+        "scheduleFor": "Agendar este disparo",
+        "date": "Data",
+        "time": "Hora",
+        "timezone": "Fuso horário",
+        "pastError": "Escolha uma data e hora no futuro.",
+        "invalidError": "Informe uma data e hora válidas.",
+        "scheduleButton": "Agendar disparo",
+        "scheduleConfirmTitle": "Confirmar disparo agendado",
+        "scheduleConfirmDesc": "Este disparo será enviado para <b>{count, number}</b> {count, plural, =1 {contato} other {contatos}} em <b>{when}</b>. Você pode reagendar ou cancelá-lo a qualquer momento antes de ele ser executado."
       }
     }
   },
@@ -1611,7 +1635,7 @@
       "resetConfig": "Redefinir configuração",
       "credentialsValid": "Credenciais válidas",
       "notConnected": "Não conectado",
-      "connectedDesc": "Seu token de acesso autentica com a Meta. Veja o status de registro abaixo para saber se os webhooks estão realmente conectados.",
+      "connectedDesc": "Seu token de acesso autentica com a Meta.",
       "notConnectedDesc": "Configure abaixo suas credenciais da API da Meta para conectar sua conta do WhatsApp Business.",
       "registered": "Registrado — a Meta entregará eventos ao Ashwini Innovations",
       "notRegistered": "Não registrado — a Meta não entregará eventos",
@@ -1619,8 +1643,8 @@
       "subscribedSince": "Inscrito desde {date}. Clique em Verificar com a Meta se os eventos pararem de chegar.",
       "unknownDate": "desconhecida",
       "lastAttemptFailed": "A última tentativa falhou com: ",
-      "retryHint": "Informe (ou corrija) o PIN de duas etapas abaixo e clique em Salvar configuração para tentar novamente.",
-      "noRegistrationHint": "Este número foi salvo antes de existir o acompanhamento de registro, ou o registro foi ignorado. Informe o PIN de duas etapas abaixo e clique em Salvar configuração para inscrevê-lo.",
+      "retryHint": "O registro é feito automaticamente ao conectar pela Meta. Se este número ainda não está ativo, reconecte-o com \"Conectar com a Meta\" para tentar novamente.",
+      "noRegistrationHint": "Este número foi salvo antes de existir o acompanhamento de registro, ou o registro foi ignorado. Conecte-o pela \"Conectar com a Meta\" para que a Meta possa entregar mensagens recebidas a ele.",
       "diagnosticLastRun": "Diagnóstico — última execução: ",
       "live": "ativo",
       "notLive": "inativo",
@@ -1718,18 +1742,54 @@
       "metaConnectCancelled": "A conexão com a Meta foi cancelada.",
       "metaConnectFailed": "Não foi possível concluir a conexão com a Meta. Tente novamente ou use a configuração manual abaixo.",
       "metaConnectNoAssets": "A Meta não retornou os dados da conta do WhatsApp necessários para concluir. Tente novamente.",
-      "metaConnectNotConfigured": "O Embedded Signup não está configurado neste servidor. Defina as variáveis de ambiente do id do app e da configuração da Meta, ou use a configuração manual abaixo."
+      "metaConnectNotConfigured": "O Embedded Signup não está configurado neste servidor. Defina as variáveis de ambiente do id do app e da configuração da Meta, ou use a configuração manual abaixo.",
+      "metaConnectMultipleNumbers": "Conectado. {count} números foram encontrados nesta conta do WhatsApp Business — escolha o ativo no cartão de status.",
+      "metaConnectNoNumbers": "Conectado, mas a Meta não lista números de telefone nesta conta do WhatsApp Business. Adicione um no Meta Business Manager e atualize o status.",
+      "metaScopeMissing": "A Meta não concedeu acesso de negócio a esta conexão, então números de outros portifólios não podem aparecer. Reconecte e aceite TODAS as permissões na janela da Meta.",
+      "statusCard": {
+        "heading": "Configure a mensageria do WhatsApp",
+        "subtext": "Algumas etapas separam você de transmissões em massa, automações e muito mais.",
+        "refresh": "Atualizar status",
+        "refreshing": "Atualizando...",
+        "statusLabel": "Status",
+        "statusApproved": "Aprovado",
+        "statusPending": "Pendente",
+        "statusRejected": "Rejeitado",
+        "statusUnknown": "Desconhecido",
+        "statusConnected": "Conectado",
+        "statusNotConnected": "Não conectado",
+        "numbersHeading": "Números nesta conta do WhatsApp Business",
+        "activeBadge": "Ativo",
+        "setActive": "Definir como ativo",
+        "settingActive": "Definindo...",
+        "setActiveDone": "Agora enviando de {number}",
+        "setActiveFailed": "Falha ao trocar o número",
+        "syncNumbersFailed": "Não foi possível atualizar a lista de números da Meta",
+        "noNumbersWarning": "A Meta não lista números de telefone nesta conta do WhatsApp Business. Adicione um no Meta Business Manager e atualize o status.",
+        "activeMissingWarning": "O número de envio não consta mais nesta conta. Selecione abaixo um novo número ativo.",
+        "syncSummary": "{numbers} número(s) encontrado(s) em {wabas} conta(s) do WhatsApp Business."
+      },
+      "disconnect": {
+        "button": "Desconectar",
+        "confirmTitle": "Desconectar o WhatsApp?",
+        "confirmDesc": "Isso interrompe toda a mensageria do WhatsApp — transmissões em massa, automações e conversas — até você reconectar. O histórico (conversas, contatos, modelos e registros de mensagens) é mantido.",
+        "cancel": "Cancelar",
+        "confirmButton": "Desconectar",
+        "disconnecting": "Desconectando...",
+        "toastDone": "WhatsApp desconectado. Reconecte quando quiser para voltar a enviar mensagens.",
+        "toastFailed": "Falha ao desconectar o WhatsApp"
+      }
     },
     "sections": {
       "overview": "Visão geral",
       "profile": "Seu perfil",
       "security": "Login e segurança",
       "appearance": "Aparência",
+      "billing": "Faturamento e plano",
       "whatsapp": "WhatsApp",
       "templates": "Modelos",
       "quick-replies": "Respostas rápidas",
       "fields": "Campos e tags",
-      "deals": "Negócios e moeda",
       "members": "Membros da equipe",
       "api": "Chaves de API"
     },
@@ -1867,18 +1927,6 @@
       "newKeyDesc": "Nomeie-a conforme a integração que vai usá-la e conceda apenas os escopos necessários.",
       "done": "Concluído",
       "networkError": "Não foi possível conectar ao servidor"
-    },
-    "deals": {
-      "title": "Negócios e moeda",
-      "description": "A moeda usada em novos negócios e nos totais do pipeline e do painel.",
-      "defaultCurrency": "Moeda padrão",
-      "defaultCurrencyDesc": "Novos negócios usam esta moeda por padrão, e os totais do pipeline e do painel são exibidos nela. Negócios existentes mantêm a moeda com que foram salvos.",
-      "currencyLabel": "Moeda",
-      "adminOnlyHint": "Somente administradores da conta podem alterar a moeda padrão.",
-      "save": "Salvar",
-      "saving": "Salvando...",
-      "saveFailed": "Falha ao salvar a moeda padrão",
-      "saveSuccess": "Moeda padrão atualizada"
     },
     "aiConfig": {
       "title": "Configuração do agente",
@@ -2139,6 +2187,75 @@
     "rowDescriptionPlaceholder": "Descrição (opcional)",
     "addRow": "Adicionar linha",
     "addSection": "Adicionar seção"
+  },
+  "Plans": {
+    "browseTitle": "Escolha seu plano",
+    "renewTitle": "Renove sua assinatura",
+    "expiredTitle": "Sua assinatura expirou",
+    "limitTitle": "Limite do plano atingido",
+    "featureTitle": "Recurso nao incluido no seu plano",
+    "browseBody": "Escolha o plano ideal para sua equipe. Voce pode mudar quando quiser.",
+    "expiredBody": "Renove para continuar enviando mensagens e usar os recursos limitados.",
+    "limitBody": "Voce usou {current} de {limit} para {feature} no seu plano.",
+    "featureBody": "{feature} nao esta incluido no seu plano atual. Facca upgrade para desbloquear.",
+    "monthly": "Mensal",
+    "yearly": "Anual",
+    "perMonth": "/mes",
+    "perYear": "/ano",
+    "unlimited": "Ilimitado",
+    "free": "Gratis",
+    "current": "Atual",
+    "currentPlan": "Plano atual",
+    "renew": "Renovar",
+    "upgrade": "Upgrade",
+    "switchPlan": "Trocar plano",
+    "startTrial": "Iniciar teste gratis",
+    "trialUsed": "Teste usado",
+    "working": "Processando...",
+    "gatewayPending": "O pagamento online ainda nao esta configurado. O checkout abrira assim que estiver ativo.",
+    "checkoutError": "Nao conseguimos iniciar o pagamento. Tente novamente.",
+    "catalogError": "Nao conseguimos carregar os planos. Tente novamente.",
+    "limits": {
+      "contacts": "Contatos",
+      "bulk_messages": "Mensagens em massa",
+      "templates": "Modelos",
+      "quick_replies": "Respostas rapidas",
+      "automation_flows": "Fluxos de automacao",
+      "whatsapp_forms": "Formularios do WhatsApp",
+      "team_members": "Membros da equipe"
+    },
+    "features": {
+      "fields_tags": "Campos e tags",
+      "broadcast_scheduler": "Agendador de transmisses",
+      "ai_agent": "Agente de resposta com IA"
+    }
+  },
+  "PlanBanner": {
+    "trialEnded": "Seu teste gratis terminou",
+    "trialEndedBody": "Escolha um plano para continuar usando transmisses e recursos limitados.",
+    "subscriptionExpired": "Sua assinatura expirou em {date}",
+    "subscriptionExpiredBody": "Renove para continuar enviando mensagens em massa ou de modelo e responder no chat. As mensagens recebidas continuam sendo recebidas.",
+    "choosePlan": "Escolher um plano",
+    "renew": "Renovar"
+  },
+  "Billing": {
+    "currentPlanTitle": "Plano atual",
+    "statusActive": "Ativo",
+    "statusTrial": "Teste",
+    "statusExpired": "Expirado",
+    "periodStart": "Inicio do periodo",
+    "trialEnds": "O teste termina",
+    "renewsOn": "Renova em",
+    "renewPlan": "Renovar plano",
+    "changePlan": "Mudar plano",
+    "usageTitle": "Uso",
+    "historyTitle": "Historico de pagamentos",
+    "loadingHistory": "Carregando...",
+    "noPayments": "Nenhum pagamento registrado ainda.",
+    "date": "Data",
+    "plan": "Plano",
+    "amount": "Valor",
+    "status": "Status"
   },
   "DashboardShell": {
     "loading": "Carregando..."

@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { exchangeEmbeddedSignupCode } from '@/lib/whatsapp/meta-api'
+import {
+  debugTokenScopes,
+  exchangeEmbeddedSignupCode,
+  listWabaPhoneNumbers,
+} from '@/lib/whatsapp/meta-api'
+import { discoverAccountWabaIds } from '@/lib/whatsapp/phone-numbers'
 
 /**
  * POST /api/whatsapp/embedded-signup/callback
@@ -79,6 +84,60 @@ export async function POST(request: Request) {
       )
     }
 
+    // Diagnostic: what did Meta actually grant this token? Portfolio
+    // discovery (finding numbers under OTHER WABAs/portfolios) needs
+    // business_management; without that grant the old numbers are
+    // unreachable no matter how the sync code is written. Log it and
+    // echo it so the browser console carries the same evidence.
+    let grantedScopes: string[] = []
+    try {
+      grantedScopes = await debugTokenScopes({ appId, appSecret, accessToken })
+      console.log('[whatsapp/embedded-signup/callback] granted scopes:', grantedScopes.join(', '))
+    } catch (err) {
+      console.error('[whatsapp/embedded-signup/callback] debug_token failed:', err)
+    }
+
+    // Existing-number support: when Meta's FINISH reported only a WABA
+    // (the customer connected an account whose numbers were registered
+    // earlier, not a freshly created one), offer the client a picker.
+    // Portfolio-wide: the old verified numbers usually live under a
+    // DIFFERENT WABA than the one the signup session landed on, so walk
+    // every sibling account the token can see, not just the session's.
+    // Each entry carries the waba_id that owns it — the client must
+    // save the pair together, POST /api/whatsapp/config validates that
+    // the number belongs to the WABA it is submitted with.
+    type PickerNumber = {
+      id: string
+      display_phone_number?: string
+      verified_name?: string
+      waba_id: string
+    }
+    const phoneNumbers: PickerNumber[] = []
+    if (!phoneNumberId && wabaId) {
+      try {
+        const wabaIds = await discoverAccountWabaIds({ wabaId, accessToken })
+        for (const w of wabaIds) {
+          try {
+            const nums = await listWabaPhoneNumbers({ wabaId: w, accessToken })
+            for (const n of nums) {
+              phoneNumbers.push({
+                id: n.id,
+                display_phone_number: n.display_phone_number,
+                verified_name: n.verified_name,
+                waba_id: w,
+              })
+            }
+          } catch (err) {
+            // One unreachable sibling must never blank the whole picker.
+            console.error('[whatsapp/embedded-signup/callback] list failed for WABA', w, err)
+          }
+        }
+      } catch (err) {
+        // Non-fatal — the client falls back to asking for manual entry.
+        console.error('[whatsapp/embedded-signup/callback] list numbers failed:', err)
+      }
+    }
+
     // Return shaped exactly like the manual form's payload so the client
     // can reuse POST /api/whatsapp/config unchanged.
     return NextResponse.json({
@@ -86,6 +145,8 @@ export async function POST(request: Request) {
       access_token: accessToken,
       phone_number_id: phoneNumberId,
       waba_id: wabaId,
+      phone_numbers: phoneNumbers,
+      granted_scopes: grantedScopes,
     })
   } catch (error) {
     console.error('Error in WhatsApp embedded-signup callback:', error)

@@ -330,6 +330,31 @@ export interface WhatsAppConfig {
   mirror_inbound_media?: boolean;
 }
 
+/**
+ * One phone number registered under an account's WABA (migration 047).
+ * Synced from GET /{WABA_ID}/phone_numbers on connect and refresh; the
+ * row with `is_active` is the number sends go out from (mirrored onto
+ * whatsapp_config.phone_number_id so send paths stay untouched).
+ * Numbers removed on Meta's side keep their row with `removed_at` set
+ * so message history keyed by the id still resolves.
+ */
+export interface WhatsAppPhoneNumber {
+  id: string;
+  account_id?: string;
+  waba_id: string;
+  phone_number_id: string;
+  display_phone_number?: string | null;
+  verified_name?: string | null;
+  quality_rating?: string | null;
+  code_verification_status?: string | null;
+  platform_type?: string | null;
+  is_active: boolean;
+  removed_at?: string | null;
+  last_synced_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 // Raw Meta status enum. We persist this verbatim from Meta (sync + webhook)
 // rather than collapsing to a local TitleCase set — distinctions like
 // PAUSED vs DISABLED vs IN_APPEAL drive the edit/resubmit/delete flows.
@@ -466,7 +491,7 @@ export interface Deal {
   assignee?: Profile;
 }
 
-export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed';
+export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed' | 'cancelled';
 export type RecipientStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed';
 
 export interface Broadcast {
@@ -478,6 +503,19 @@ export interface Broadcast {
   template_variables?: Record<string, unknown>;
   audience_filter?: Record<string, unknown>;
   scheduled_at?: string;
+  /**
+   * IANA timezone the user chose when scheduling (e.g. Asia/Kolkata).
+   * Display / reschedule context only — `scheduled_at` is the
+   * authoritative UTC instant. Added in migration 046; NULL for rows
+   * that were never scheduled.
+   */
+  scheduled_tz?: string | null;
+  /**
+   * Runtime media-header URL override frozen at schedule time, so the
+   * server-side cron send reproduces what the browser pass would have
+   * sent. Added in migration 046. NULL → use the template's own header.
+   */
+  header_media_url?: string | null;
   status: BroadcastStatus;
   total_recipients: number;
   sent_count: number;

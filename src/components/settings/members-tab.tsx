@@ -46,6 +46,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
+import { GatedButton } from '@/components/ui/gated-button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
@@ -287,10 +288,10 @@ export function MembersTab() {
         description={t('description')}
         action={
           <RequireRole min="admin">
-            <Button onClick={() => setInviteOpen(true)}>
+            <GatedButton planFeature="team_members" onClick={() => setInviteOpen(true)}>
               <Plus className="size-4" />
               {t('inviteMember')}
-            </Button>
+            </GatedButton>
           </RequireRole>
         }
       />

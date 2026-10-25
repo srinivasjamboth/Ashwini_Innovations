@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
+import { checkLimit } from '@/lib/plans/entitlements'
 import { getTemplate } from '@/lib/automations/templates'
 import { insertSteps, type BuilderStepInput } from '@/lib/automations/steps-tree'
 import {
@@ -84,6 +85,10 @@ export async function POST(request: Request) {
       { status: 400 },
     )
   }
+
+  // Plan enforcement (Part 4): automation flows are a counted resource.
+  const limit = await checkLimit(accountId, 'automation_flows')
+  if (!limit.allowed) return NextResponse.json(limit, { status: 403 })
 
   // Block activation of a clearly broken automation up-front instead of
   // letting every trigger silently produce a failed log row. Drafts

@@ -20,6 +20,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { sendTemplateMessage } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';
+import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder';
 import {
   parseInternationalPhone,
   phoneVariants,
@@ -59,6 +60,16 @@ interface PlannedRecipient {
   recipientRowId: string;
   phone: string;
   params: string[];
+  /**
+   * Structured per-send values (media-header URL override, button
+   * values). Optional and additive: callers that don't set it (the API
+   * create path, the resume path) send exactly as before, and
+   * `sendTemplateMessage` falls back to the template's stored header.
+   * The scheduled-delivery cron populates it from the broadcast's
+   * `header_media_url` so a media-header campaign fires faithfully while
+   * the browser is closed.
+   */
+  messageParams?: SendTimeParams;
 }
 
 export interface BroadcastPlan {
@@ -276,6 +287,7 @@ export async function deliverBroadcast(
           templateName: plan.templateName,
           language: plan.templateLanguage,
           template: plan.templateRow ?? undefined,
+          messageParams: recipient.messageParams,
           params: recipient.params,
         });
         sentMessageId = result.messageId;

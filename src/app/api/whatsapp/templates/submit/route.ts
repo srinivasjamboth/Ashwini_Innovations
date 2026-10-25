@@ -6,6 +6,7 @@ import {
   requireRole,
   toErrorResponse,
 } from '@/lib/auth/account'
+import { checkLimit } from '@/lib/plans/entitlements'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { submitMessageTemplate } from '@/lib/whatsapp/meta-api'
 import {
@@ -125,6 +126,24 @@ export async function POST(request: Request) {
         { error: e instanceof Error ? e.message : 'Validation failed.' },
         { status: 400 },
       )
+    }
+
+    // Plan enforcement (Part 4): templates are a counted, gated resource
+    // (rejected rows are excluded from the count inside getEntitlements, so
+    // a Meta rejection never wastes a slot). Only a NEW template consumes a
+    // slot — re-submitting/editing one that already exists must not be
+    // blocked merely because the account is at its cap.
+    const { data: existingTemplate } = await supabase
+      .from('message_templates')
+      .select('id')
+      .eq('account_id', accountId)
+      .eq('user_id', userId)
+      .eq('name', payload.name)
+      .eq('language', payload.language)
+      .maybeSingle()
+    if (!existingTemplate) {
+      const limit = await checkLimit(accountId, 'templates')
+      if (!limit.allowed) return NextResponse.json(limit, { status: 403 })
     }
 
     const dryRun =

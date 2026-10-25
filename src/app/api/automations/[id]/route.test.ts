@@ -145,6 +145,13 @@ vi.mock('@/lib/automations/admin-client', () => ({
   }),
 }))
 
+// Duplicating now runs a plan-limit check (a clone is a gated create).
+// These tests target tenancy, not billing, so pin the check to "allowed"
+// and let the clone proceed to the account-scoped insert under test.
+vi.mock('@/lib/plans/entitlements', () => ({
+  checkLimit: async () => ({ allowed: true }),
+}))
+
 import { GET, PATCH, DELETE } from './route'
 import { POST as DUPLICATE } from './duplicate/route'
 

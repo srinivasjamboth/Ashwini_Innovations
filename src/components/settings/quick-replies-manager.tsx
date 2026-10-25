@@ -5,6 +5,7 @@ import { Loader2, MessageSquare, Pencil, Plus, Trash2, Zap } from "lucide-react"
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { GatedButton } from "@/components/ui/gated-button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -129,10 +130,10 @@ export function QuickRepliesManager() {
         title="Quick replies"
         description="Reusable snippets — plain text or a saved interactive message — that agents can insert from the inbox composer."
         action={
-          <Button onClick={openCreate}>
+          <GatedButton planFeature="quick_replies" onClick={openCreate}>
             <Plus className="mr-1 h-4 w-4" />
             New quick reply
-          </Button>
+          </GatedButton>
         }
       />
 

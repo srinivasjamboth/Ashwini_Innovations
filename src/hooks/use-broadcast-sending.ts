@@ -55,6 +55,17 @@ interface BroadcastPayload {
 
 interface UseBroadcastSendingReturn {
   createAndSendBroadcast: (payload: BroadcastPayload) => Promise<string>;
+  /**
+   * Resolve + freeze the audience exactly like the send-now path, then
+   * persist a status 'scheduled' broadcast instead of sending it. The
+   * scheduler cron fires it at `scheduledAt` server-side. Returns the
+   * new broadcast id.
+   */
+  scheduleBroadcast: (
+    payload: BroadcastPayload,
+    scheduledAt: string,
+    timezone: string,
+  ) => Promise<string>;
   isProcessing: boolean;
   progress: number;
 }
@@ -615,5 +626,83 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
     }
   }
 
-  return { createAndSendBroadcast, isProcessing, progress };
+  /**
+   * Build the SAME frozen recipient set the send-now path would, but hand
+   * it to the schedule route instead of running the send loop. Reuses
+   * resolveAudience / fetchCustomValueIndex / resolveVariables — no
+   * second copy of that logic — so a scheduled broadcast sends exactly
+   * what clicking "Send Now" at that moment would have.
+   */
+  async function scheduleBroadcast(
+    payload: BroadcastPayload,
+    scheduledAt: string,
+    timezone: string,
+  ): Promise<string> {
+    setIsProcessing(true);
+    setProgress(0);
+    const supabase = createClient();
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const user = session?.user;
+      if (!user) throw new Error('You are not signed in.');
+      if (!accountId) throw new Error('Your profile is not linked to an account.');
+      if (!scheduledAt) throw new Error('Pick a date and time to schedule.');
+
+      setProgress(20);
+      const contacts = await resolveAudience(payload.audience);
+      if (contacts.length === 0) {
+        throw new Error('No contacts found for this audience.');
+      }
+
+      setProgress(55);
+      const customValueIndex = await fetchCustomValueIndex(
+        supabase,
+        contacts.map((c) => c.id),
+      );
+      const recipients = contacts.map((contact) => ({
+        contact_id: contact.id,
+        template_params: resolveVariables(
+          payload.variables,
+          contact,
+          customValueIndex.get(contact.id),
+        ),
+      }));
+
+      setProgress(80);
+      const res = await fetch('/api/whatsapp/broadcast/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: payload.name,
+          template_name: payload.template.name,
+          template_language: payload.template.language ?? 'en_US',
+          template_variables: payload.variables,
+          audience_filter: {
+            type: payload.audience.type,
+            tagIds: payload.audience.tagIds,
+            customField: payload.audience.customField,
+            excludeTagIds: payload.audience.excludeTagIds,
+          },
+          scheduled_at: scheduledAt,
+          timezone,
+          header_media_url: payload.headerMediaUrl?.trim() || null,
+          recipients,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || `Scheduling failed (HTTP ${res.status})`);
+      }
+
+      setProgress(100);
+      return data.broadcast_id as string;
+    } finally {
+      setIsProcessing(false);
+    }
+  }
+
+  return { createAndSendBroadcast, scheduleBroadcast, isProcessing, progress };
 }

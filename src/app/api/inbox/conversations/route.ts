@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireRole, toErrorResponse } from "@/lib/auth/account";
 import { findExistingContact, isUniqueViolation } from "@/lib/contacts/dedupe";
 import { parseInternationalPhone } from "@/lib/whatsapp/phone-utils";
+import { checkLimit } from "@/lib/plans/entitlements";
 import {
   CONVERSATION_SELECT,
   normalizeConversation,
@@ -49,6 +50,27 @@ export async function POST(request: Request) {
         { error: "Too many chats in one request" },
         { status: 400 },
       );
+    }
+
+    // Plan enforcement (Part 4 — "bulk chat"): starting chats creates
+    // contacts, a counted/gated resource. The per-row DB guard trigger would
+    // reject only the overflow row (partial creation); the spec requires a
+    // BATCH PRE-CHECK that rejects the WHOLE operation when it would exceed
+    // the contacts limit. Count how many valid numbers are not yet contacts,
+    // check that many up front, and bail before creating anything.
+    const newContactCount = (
+      await Promise.all(
+        chats
+          .map((c) => parseInternationalPhone((c.phone ?? "").trim()))
+          .filter((p) => !!p)
+          .map((p) => findExistingContact(supabase, accountId, `+${p}`))
+      )
+    ).filter((existing) => !existing).length;
+    if (newContactCount > 0) {
+      const seat = await checkLimit(accountId, "contacts", newContactCount);
+      if (!seat.allowed) {
+        return NextResponse.json(seat, { status: 403 });
+      }
     }
 
     const created: Conversation[] = [];

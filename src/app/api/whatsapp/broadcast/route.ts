@@ -15,6 +15,7 @@ import {
   rateLimitResponse,
   RATE_LIMITS,
 } from '@/lib/rate-limit'
+import { checkLimit, incrementUsage } from '@/lib/plans/entitlements'
 
 interface BroadcastResult {
   phone: string
@@ -118,6 +119,16 @@ export async function POST(request: Request) {
         { error: 'template_name is required' },
         { status: 400 }
       )
+    }
+
+    // Plan enforcement (Part 4): a broadcast send is the bulk-message quota.
+    // Pre-check the WHOLE batch against remaining capacity and reject the
+    // entire operation (not just the overflow) if it would exceed the plan.
+    // Enterprise is unlimited (-1), so checkLimit never blocks it — the fair-
+    // use flag is recorded on increment below. Deletions never restore quota.
+    const bulk = await checkLimit(accountId, 'bulk_messages', recipients.length)
+    if (!bulk.allowed) {
+      return NextResponse.json(bulk, { status: 403 })
     }
 
     const { data: config, error: configError } = await supabase
@@ -229,6 +240,12 @@ export async function POST(request: Request) {
         })
         failedCount++
       }
+    }
+
+    // Record the messages ACTUALLY sent (Part 4: "increment by the number
+    // actually sent"), not the batch size — failures don't consume quota.
+    if (sentCount > 0) {
+      await incrementUsage(accountId, 'bulk_messages', sentCount)
     }
 
     return NextResponse.json({

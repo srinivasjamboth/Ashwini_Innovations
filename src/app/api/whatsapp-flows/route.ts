@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
+import { checkLimit } from '@/lib/plans/entitlements';
 import {
   FLOW_SELECT,
   FlowJsonRejectedError,
@@ -50,6 +51,10 @@ export async function POST(request: Request) {
     // Creating a Form is a write against the connected WABA that RLS
     // cannot undo, so it sits at the same tier as template submission.
     const { supabase, accountId, userId } = await requireRole('admin');
+
+    // Plan enforcement (Part 4): WhatsApp forms are a counted resource.
+    const limit = await checkLimit(accountId, 'whatsapp_forms');
+    if (!limit.allowed) return NextResponse.json(limit, { status: 403 });
 
     let body: unknown;
     try {

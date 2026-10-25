@@ -237,6 +237,42 @@ html[data-theme="rose"] {
   --sidebar-ring: oklch(0.645 0.22 16);
 }
 
+/* ============================================================
+   Super Admin area — the dark sea-blue palette (one token file).
+   ============================================================
+   html[data-admin="1"] is written synchronously by
+   src/app/ashwini-control/layout.tsx, so NOTHING here can leak into
+   the customer app — the attribute only exists inside /ashwini-control.
+   Content surfaces stay light (the same layout forces data-mode=
+   light); sea blue is the only brand/accent color in the admin area:
+   remapping --primary/--ring/--chart-* makes every shadcn button,
+   link, focus ring and chart pick the sea family automatically, and
+   the raw --sea-* tokens are what the admin components reference for
+   sidebar, badges and tints. */
+html[data-admin="1"] {
+  --sea-950: #061e2d;
+  --sea-900: #0a2e42;
+  --sea-800: #0d3b54;
+  --sea-700: #135070;
+  --sea-600: #1b6a8f;
+  --sea-200: #bfd6e3;
+  --sea-100: #e3eef4;
+  --sea-50: #f3f8fb;
+  --sea-ink: #0b1f2a;
+  --sea-muted: #5b7384;
+
+  --primary: var(--sea-800);
+  --primary-hover: var(--sea-700);
+  --primary-soft: color-mix(in srgb, var(--sea-800) 12%, transparent);
+  --primary-soft-2: color-mix(in srgb, var(--sea-800) 22%, transparent);
+  --ring: var(--sea-600);
+  --chart-1: var(--sea-800);
+  --chart-2: var(--sea-600);
+  --sidebar-primary: var(--sea-800);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: var(--sea-600);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -379,5 +415,35 @@ html[data-theme="rose"] {
 @media (prefers-reduced-motion: reduce) {
   .dash-glow:hover::before {
     animation: none;
+  }
+}
+
+/* ------------------------------------------------------------------
+ * Admin Pulse floating-card gallery — ambient particle drift.
+ * The gallery references a `float` keyframe but ships no definition;
+ * this namespaced one fills it. Scoped to the admin-only inline
+ * `animation: ashwini-admin-float ...` in pulse-metric-card.tsx, so
+ * nothing outside /ashwini-control is affected.
+ * ------------------------------------------------------------------ */
+@keyframes ashwini-admin-float {
+  0% {
+    transform: translateY(0);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.1;
+  }
+  90% {
+    opacity: 0.1;
+  }
+  100% {
+    transform: translateY(-120vh);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [style*="ashwini-admin-float"] {
+    animation: none !important;
   }
 }

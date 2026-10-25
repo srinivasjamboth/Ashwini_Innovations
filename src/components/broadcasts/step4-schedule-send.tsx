@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { MessageTemplate } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -14,8 +14,15 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { ArrowLeft, Send, Loader2, Users, Save } from 'lucide-react';
+import { ArrowLeft, Send, Loader2, Users, Save, CalendarClock } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import {
+  getLocalTimeZone,
+  getTimeZoneOptions,
+  isFuture,
+  ScheduleTimeError,
+  zonedTimeToUtc,
+} from '@/lib/whatsapp/schedule-time';
 
 interface AudienceConfig {
   type: string;
@@ -23,12 +30,16 @@ interface AudienceConfig {
   csvContacts?: { phone: string; name?: string }[];
 }
 
+type SendMode = 'now' | 'schedule';
+
 interface Step4Props {
   name: string;
   onNameChange: (name: string) => void;
   template: MessageTemplate;
   audience: AudienceConfig;
   onSend: () => void;
+  /** Fires the schedule path with the chosen UTC instant + IANA zone. */
+  onSchedule: (scheduledAtIso: string, timezone: string) => void;
   onSaveDraft?: () => void;
   onBack: () => void;
   isProcessing: boolean;
@@ -41,6 +52,7 @@ export function Step4ScheduleSend({
   template,
   audience,
   onSend,
+  onSchedule,
   onSaveDraft,
   onBack,
   isProcessing,
@@ -48,8 +60,39 @@ export function Step4ScheduleSend({
 }: Step4Props) {
   const t = useTranslations('Broadcasts.wizard');
   const [showConfirm, setShowConfirm] = useState(false);
+  const [showScheduleConfirm, setShowScheduleConfirm] = useState(false);
   const [estimatedReach, setEstimatedReach] = useState<number>(0);
   const [loadingReach, setLoadingReach] = useState(true);
+
+  // ---- Scheduling state -------------------------------------------------
+  const zones = useMemo(() => getTimeZoneOptions(), []);
+  const [mode, setMode] = useState<SendMode>('now');
+  const [dateStr, setDateStr] = useState('');
+  const [timeStr, setTimeStr] = useState('');
+  const [timezone, setTimezone] = useState(() => getLocalTimeZone());
+
+  // Resolve the wall-clock pick to a UTC instant, or surface why it's not
+  // usable yet. Recomputed on every keystroke so the confirm button and
+  // inline hint never disagree with the inputs.
+  const schedule = useMemo<{ iso: string | null; error: string | null }>(() => {
+    if (!dateStr || !timeStr) {
+      return { iso: null, error: null };
+    }
+    try {
+      const when = zonedTimeToUtc(dateStr, timeStr, timezone);
+      if (!isFuture(when)) {
+        return { iso: null, error: t('scheduleSend.pastError') };
+      }
+      return { iso: when.toISOString(), error: null };
+    } catch (err) {
+      return {
+        iso: null,
+        error: err instanceof ScheduleTimeError ? err.message : t('scheduleSend.invalidError'),
+      };
+    }
+  }, [dateStr, timeStr, timezone, t]);
+
+  const canSchedule = Boolean(name.trim() && schedule.iso && !isProcessing);
 
   useEffect(() => {
     async function calculateReach() {
@@ -144,6 +187,86 @@ export function Step4ScheduleSend({
         </div>
       </div>
 
+      {/* Send mode: now vs schedule. */}
+      <div>
+        <label className="mb-1.5 block text-sm font-medium text-foreground">
+          {t('scheduleSend.when')}
+        </label>
+        <div className="inline-flex rounded-lg border border-border bg-muted p-0.5">
+          {(['now', 'schedule'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMode(m)}
+              disabled={isProcessing}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-50 ${
+                mode === m
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {m === 'now' ? t('scheduleSend.modeNow') : t('scheduleSend.modeSchedule')}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Scheduling fields — only in schedule mode. */}
+      {mode === 'schedule' && (
+        <div className="rounded-xl border border-border bg-card/50 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <CalendarClock className="h-4 w-4 text-primary" />
+            <p className="text-sm font-medium text-foreground">
+              {t('scheduleSend.scheduleFor')}
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                {t('scheduleSend.date')}
+              </label>
+              <Input
+                type="date"
+                value={dateStr}
+                min={new Date().toISOString().slice(0, 10)}
+                onChange={(e) => setDateStr(e.target.value)}
+                className="border-border bg-muted text-foreground"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                {t('scheduleSend.time')}
+              </label>
+              <Input
+                type="time"
+                value={timeStr}
+                onChange={(e) => setTimeStr(e.target.value)}
+                className="border-border bg-muted text-foreground"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              {t('scheduleSend.timezone')}
+            </label>
+            <select
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+              className="h-9 w-full rounded-md border border-border bg-muted px-3 text-sm text-foreground"
+            >
+              {zones.map((z) => (
+                <option key={z} value={z}>
+                  {z}
+                </option>
+              ))}
+            </select>
+          </div>
+          {schedule.error && (
+            <p className="text-xs text-red-400">{schedule.error}</p>
+          )}
+        </div>
+      )}
+
       {/* Processing overlay */}
       {isProcessing && (
         <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
@@ -187,6 +310,7 @@ export function Step4ScheduleSend({
             </Button>
           )}
 
+          {mode === 'now' ? (
           <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
           <DialogTrigger
             render={
@@ -233,6 +357,64 @@ export function Step4ScheduleSend({
             </DialogFooter>
           </DialogContent>
         </Dialog>
+          ) : (
+          <Dialog open={showScheduleConfirm} onOpenChange={setShowScheduleConfirm}>
+          <DialogTrigger
+            render={
+              <Button
+                disabled={!canSchedule}
+                className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              />
+            }
+          >
+            <CalendarClock className="h-4 w-4" />
+            {t('scheduleSend.scheduleButton')}
+          </DialogTrigger>
+          <DialogContent className="border-border bg-popover sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-popover-foreground">
+                {t('scheduleSend.scheduleConfirmTitle')}
+              </DialogTitle>
+              <DialogDescription className="text-muted-foreground">
+                {t.rich('scheduleSend.scheduleConfirmDesc', {
+                  count: estimatedReach,
+                  when: schedule.iso
+                    ? new Intl.DateTimeFormat(undefined, {
+                        dateStyle: 'medium',
+                        timeStyle: 'short',
+                        timeZone: timezone,
+                      }).format(new Date(schedule.iso))
+                    : '',
+                  b: (chunks) => (
+                    <span className="font-medium text-popover-foreground">{chunks}</span>
+                  ),
+                })}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setShowScheduleConfirm(false)}
+                className="border-border text-muted-foreground"
+              >
+                {t('cancel')}
+              </Button>
+              <Button
+                onClick={() => {
+                  if (!schedule.iso) return;
+                  setShowScheduleConfirm(false);
+                  onSchedule(schedule.iso, timezone);
+                }}
+                disabled={!schedule.iso}
+                className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                <CalendarClock className="h-4 w-4" />
+                {t('scheduleSend.scheduleButton')}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+          )}
         </div>
       </div>
     </div>

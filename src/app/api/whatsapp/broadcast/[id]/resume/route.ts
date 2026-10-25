@@ -33,6 +33,11 @@ import {
 } from '@/lib/whatsapp/broadcast-resume';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import {
+  checkLimit,
+  getEntitlements,
+  incrementUsage,
+} from '@/lib/plans/entitlements';
+import {
   checkRateLimit,
   rateLimitResponse,
   RATE_LIMITS,
@@ -65,6 +70,18 @@ export async function POST(
       ? body.scope
       : 'pending';
 
+    // Plan enforcement (Part 3/4): resuming puts real template messages on
+    // real phones, so an expired account is blocked before the claim and the
+    // batch is pre-checked against the remaining bulk quota once we know how
+    // many will actually be sent this pass.
+    const ent = await getEntitlements(accountId);
+    if (ent.effectiveStatus === 'expired') {
+      return NextResponse.json(
+        { allowed: false, reason: 'subscription_expired', upgrade_required: true },
+        { status: 403 }
+      );
+    }
+
     // Claim BEFORE planning. Two clicks on Resume, or a click while an
     // earlier pass is still running, would otherwise both build a plan
     // from the same 'pending' rows and message everyone twice — and a
@@ -89,6 +106,25 @@ export async function POST(
       scope
     );
 
+    // Reject the whole resume (release the claim, nothing sent) if this pass
+    // would exceed the remaining bulk-message capacity.
+    if (plan.planned.length > 0) {
+      const bulk = await checkLimit(accountId, 'bulk_messages', plan.planned.length);
+      if (!bulk.allowed) {
+        await releaseBroadcastDelivery(supabase, id).catch(() => {});
+        claimedId = null;
+        return NextResponse.json(bulk, { status: 403 });
+      }
+    }
+
+    // Snapshot the sent count so the after() block can charge exactly the
+    // number of messages this pass actually delivers (not the batch size).
+    const { count: sentBefore } = await supabase
+      .from('broadcast_recipients')
+      .select('id', { count: 'exact', head: true })
+      .eq('broadcast_id', id)
+      .eq('status', 'sent');
+
     await markBroadcastSending(supabase, id);
     claimedId = null; // ownership passes to the after() block
 
@@ -108,6 +144,16 @@ export async function POST(
         await finalizeBroadcastStatus(admin, id).catch(() => {});
       } finally {
         await releaseBroadcastDelivery(admin, id);
+        // Charge only the delta newly reached this pass.
+        const { count: sentAfter } = await admin
+          .from('broadcast_recipients')
+          .select('id', { count: 'exact', head: true })
+          .eq('broadcast_id', id)
+          .eq('status', 'sent');
+        const delta = (sentAfter ?? 0) - (sentBefore ?? 0);
+        if (delta > 0) {
+          await incrementUsage(accountId, 'bulk_messages', delta);
+        }
       }
     });
 

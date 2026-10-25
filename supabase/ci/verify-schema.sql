@@ -88,6 +88,24 @@ BEGIN
       'profiles.phone is missing — migration 044 did not apply';
   END IF;
 
+  -- Scheduling (046): the 'cancelled' status and the due-scan index are
+  -- both guarded DDL, so a typo'd name would apply cleanly and accomplish
+  -- nothing — the cron would then sweep full-table and a cancel would
+  -- violate the CHECK at runtime instead of here.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.broadcasts'::regclass
+      AND conname = 'broadcasts_status_check'
+      AND pg_get_constraintdef(oid) LIKE '%cancelled%'
+  ) THEN
+    RAISE EXCEPTION
+      'broadcasts_status_check does not allow the cancelled status — migration 046 did not apply';
+  END IF;
+  IF to_regclass('public.idx_broadcasts_scheduled_due') IS NULL THEN
+    RAISE EXCEPTION
+      'idx_broadcasts_scheduled_due is missing — migration 046 did not apply';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;
