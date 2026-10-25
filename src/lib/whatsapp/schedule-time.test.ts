@@ -3,7 +3,9 @@ import {
   ScheduleTimeError,
   formatScheduledInZone,
   getTimeZoneOptions,
+  hasScheduleLead,
   isFuture,
+  SCHEDULE_MIN_LEAD_MS,
   utcToZonedParts,
   zonedTimeToUtc,
 } from '@/lib/whatsapp/schedule-time';
@@ -87,6 +89,27 @@ describe('isFuture', () => {
     expect(isFuture('2026-06-15T12:00:01.000Z', now)).toBe(true);
     expect(isFuture('2026-06-15T11:59:59.000Z', now)).toBe(false);
     expect(isFuture('2026-06-15T12:00:00.000Z', now)).toBe(false);
+  });
+});
+
+describe('hasScheduleLead', () => {
+  const now = new Date('2026-06-15T12:00:00.000Z');
+  it('mirrors the endpoint: accepts a genuine future pick', () => {
+    // "one minute ahead" / "an hour ahead" must always pass.
+    expect(hasScheduleLead('2026-06-15T12:01:00.000Z', now)).toBe(true);
+    expect(hasScheduleLead('2026-06-15T13:00:00.000Z', now)).toBe(true);
+    // Exactly the minimum lead is accepted (>=), matching leadMs < MIN.
+    expect(
+      hasScheduleLead(new Date(now.getTime() + SCHEDULE_MIN_LEAD_MS), now),
+    ).toBe(true);
+  });
+  it('rejects a past or effectively-now time, so the button and server agree', () => {
+    expect(hasScheduleLead('2026-06-15T11:59:00.000Z', now)).toBe(false);
+    expect(hasScheduleLead('2026-06-15T12:00:10.000Z', now)).toBe(false);
+    // Just short of the window → rejected (the endpoint would too).
+    expect(
+      hasScheduleLead(new Date(now.getTime() + SCHEDULE_MIN_LEAD_MS - 1), now),
+    ).toBe(false);
   });
 });
 

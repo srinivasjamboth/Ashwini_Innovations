@@ -160,7 +160,16 @@ export default function NewBroadcastPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-8">
+    // Step 1 is the only two-column step (form + sticky phone preview),
+    // so it gets the wider container; the other steps keep the original
+    // single-column max-w-3xl exactly as before.
+    <div
+      className={
+        currentStep === 0
+          ? 'mx-auto w-full max-w-5xl space-y-8'
+          : 'mx-auto max-w-3xl space-y-8'
+      }
+    >
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-foreground">{t('title')}</h1>
@@ -224,6 +233,8 @@ export default function NewBroadcastPage() {
               onSelect={setTemplate}
               onNext={() => setCurrentStep(1)}
               onBack={() => router.push('/broadcasts')}
+              audienceCsvContacts={audience.csvContacts}
+              variables={variables}
             />
           )}
           {currentStep === 1 && (

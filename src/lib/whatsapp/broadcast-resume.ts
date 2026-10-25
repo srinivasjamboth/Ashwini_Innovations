@@ -118,13 +118,17 @@ export interface ResumePlan {
 interface RecipientRow {
   id: string;
   template_params: unknown;
-  contact: { phone?: string | null } | { phone?: string | null }[] | null;
+  contact: { id?: string; phone?: string | null } | { id?: string; phone?: string | null }[] | null;
 }
 
 /** Supabase renders an embedded to-one join as an object or a 1-array. */
-function contactPhone(row: RecipientRow): string | null {
+function contactRow(row: RecipientRow): { id?: string; phone?: string | null } | null {
   const c = Array.isArray(row.contact) ? row.contact[0] : row.contact;
-  return c?.phone ?? null;
+  return c ?? null;
+}
+
+function contactPhone(row: RecipientRow): string | null {
+  return contactRow(row)?.phone ?? null;
 }
 
 /**
@@ -146,7 +150,7 @@ export async function planBroadcastResume(
 ): Promise<ResumePlan> {
   const { data: broadcast, error: bcError } = await db
     .from('broadcasts')
-    .select('id, template_name, template_language')
+    .select('id, user_id, template_name, template_language')
     .eq('id', broadcastId)
     .eq('account_id', accountId)
     .maybeSingle();
@@ -158,7 +162,7 @@ export async function planBroadcastResume(
   const statuses = scopeStatuses(scope);
   const { data: rawRows, error: recError } = await db
     .from('broadcast_recipients')
-    .select('id, template_params, contact:contacts(phone)')
+    .select('id, template_params, contact:contacts(id, phone)')
     .eq('broadcast_id', broadcastId)
     .in('status', statuses)
     // Oldest first, so repeated capped passes chew through the backlog
@@ -234,6 +238,10 @@ export async function planBroadcastResume(
 
   const plan: BroadcastPlan = {
     broadcastId,
+    accountId,
+    // Audit owner for inbox-mirror rows; broadcast.user_id is NOT NULL
+    // in the DB, the fallback only covers hand-built test fixtures.
+    auditUserId: (broadcast as { user_id?: string }).user_id ?? '',
     templateName: broadcast.template_name,
     templateLanguage: resolvedTemplate.language,
     phoneNumberId: config.phone_number_id,
@@ -241,6 +249,7 @@ export async function planBroadcastResume(
     templateRow: resolvedTemplate.row,
     planned: slice.map((row) => ({
       recipientRowId: row.id,
+      contactId: contactRow(row)?.id,
       phone: sanitizePhoneForMeta(contactPhone(row) ?? ''),
       params: Array.isArray(row.template_params)
         ? row.template_params.filter((p): p is string => typeof p === 'string')

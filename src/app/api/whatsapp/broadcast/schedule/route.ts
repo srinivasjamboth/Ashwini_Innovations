@@ -21,6 +21,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
 import { checkFeature } from '@/lib/plans/entitlements';
+import { ensureBroadcastSchedulerArmed } from '@/lib/whatsapp/broadcast-scheduler-arm';
+import { SCHEDULE_MIN_LEAD_MS } from '@/lib/whatsapp/schedule-time';
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -48,8 +50,10 @@ interface SchedulePayload {
 // batches like the create path. Bound the request generously.
 const INSERT_BATCH_SIZE = 200;
 // Never honour a schedule that is effectively "now" — that's a Send Now,
-// and an accidental past date would fire on the next cron tick.
-const MIN_LEAD_MS = 30 * 1000;
+// and an accidental past date would fire on the next cron tick. The SAME
+// window the wizard enforces (lib/whatsapp/schedule-time), so a pick the
+// client green-lights is never rejected here.
+const MIN_LEAD_MS = SCHEDULE_MIN_LEAD_MS;
 
 export async function POST(request: Request) {
   let createdBroadcastId: string | null = null;
@@ -60,6 +64,12 @@ export async function POST(request: Request) {
   try {
     const { supabase, accountId, userId } = await requireRole('agent');
     userClient = supabase;
+
+    // Arm the in-process scheduler in whatever server is handling this
+    // request. register() (instrumentation) does not run under `next dev`,
+    // so arming from this hot write path guarantees a due broadcast actually
+    // fires on a self-hosted single server without an external pinger.
+    ensureBroadcastSchedulerArmed();
 
     const limit = checkRateLimit(
       `broadcast-schedule:${userId}`,

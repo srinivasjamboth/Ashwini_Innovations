@@ -219,11 +219,13 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
           "app-sidebar fixed inset-y-0 left-0 z-40 flex h-full w-64 flex-col border-r border-sidebar-border bg-sidebar",
           "transition-transform duration-200 ease-out will-change-transform",
           open ? "translate-x-0" : "-translate-x-full",
-          // Desktop: static, always visible — reset all the mobile framing.
+          // Desktop: sticky, always visible — reset all the mobile framing.
+          // The page (window) scrolls now, so the rail pins to the top at
+          // full viewport height and its own nav scrolls internally.
           // Width + the collapse transition are owned by globals.css
           // (.app-sidebar, keyed off html[data-sidebar-collapsed]) so the
           // saved state applies before paint without a React render.
-          "lg:static lg:z-0 lg:translate-x-0",
+          "lg:sticky lg:top-0 lg:bottom-auto lg:z-30 lg:h-screen lg:translate-x-0",
         )}
         aria-label={t("primaryNav")}
       >

@@ -199,6 +199,30 @@ export function isFuture(instant: Date | string, now: Date = new Date()): boolea
   return at.getTime() > now.getTime();
 }
 
+/**
+ * The minimum lead a scheduled broadcast must have over "now". One
+ * source of truth shared by the wizard (so its inline hint + enabled
+ * button never disagree with) and the schedule endpoint (which rejects
+ * anything inside this window as effectively "Send Now"). Kept small so
+ * a genuine "in a minute" / "in an hour" pick always passes.
+ */
+export const SCHEDULE_MIN_LEAD_MS = 30_000;
+
+/**
+ * The acceptance rule the server enforces: the instant must sit at
+ * least `leadMs` in the future. A past time and an almost-now time both
+ * fail here — exactly what the endpoint rejects — so enabling the button
+ * on a green light guarantees the server won't bounce it.
+ */
+export function hasScheduleLead(
+  instant: Date | string,
+  now: Date = new Date(),
+  leadMs: number = SCHEDULE_MIN_LEAD_MS,
+): boolean {
+  const at = typeof instant === 'string' ? new Date(instant) : instant;
+  return at.getTime() - now.getTime() >= leadMs;
+}
+
 function isKnownZone(timeZone: string): boolean {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone });

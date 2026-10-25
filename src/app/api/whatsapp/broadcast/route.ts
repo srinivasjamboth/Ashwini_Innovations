@@ -3,7 +3,8 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder'
-import { resolveTemplateRow } from '@/lib/whatsapp/template-body'
+import { resolveTemplateRow, templateBodyParams, templateContentText } from '@/lib/whatsapp/template-body'
+import { mirrorBroadcastToChat } from '@/lib/whatsapp/broadcast-chat'
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -228,6 +229,21 @@ export async function POST(request: Request) {
           whatsapp_message_id: sentMessageId,
         })
         sentCount++
+        // Mirror the delivered template into the recipient's chat thread
+        // so the broadcast is visible in the Inbox (find-or-create on
+        // the dedupe keys — never a duplicate number or conversation,
+        // and best-effort: a mirror failure never fails the send).
+        await mirrorBroadcastToChat(supabase, {
+          accountId,
+          userId,
+          phone: sanitized,
+          templateName: template_name,
+          contentText: templateContentText(
+            templateRow,
+            templateBodyParams(recipient.params, recipient.messageParams),
+          ),
+          whatsappMessageId: sentMessageId,
+        })
       } else {
         console.error(
           `Failed to send broadcast to ${recipient.phone}:`,

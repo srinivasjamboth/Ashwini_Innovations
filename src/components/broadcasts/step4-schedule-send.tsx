@@ -19,8 +19,9 @@ import { useTranslations } from 'next-intl';
 import {
   getLocalTimeZone,
   getTimeZoneOptions,
-  isFuture,
+  hasScheduleLead,
   ScheduleTimeError,
+  utcToZonedParts,
   zonedTimeToUtc,
 } from '@/lib/whatsapp/schedule-time';
 
@@ -72,15 +73,26 @@ export function Step4ScheduleSend({
   const [timezone, setTimezone] = useState(() => getLocalTimeZone());
 
   // Resolve the wall-clock pick to a UTC instant, or surface why it's not
-  // usable yet. Recomputed on every keystroke so the confirm button and
-  // inline hint never disagree with the inputs.
+  // usable yet. `nowMs` re-ticks while schedule mode is open so the check
+  // is always evaluated against the CURRENT instant — a time that lapses
+  // while the user fills the form re-flags itself instead of going stale
+  // and getting bounced by the server on submit. The acceptance window
+  // (hasScheduleLead) is the exact rule the schedule endpoint enforces.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (mode !== 'schedule') return;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 10_000);
+    return () => clearInterval(id);
+  }, [mode]);
+
   const schedule = useMemo<{ iso: string | null; error: string | null }>(() => {
     if (!dateStr || !timeStr) {
       return { iso: null, error: null };
     }
     try {
       const when = zonedTimeToUtc(dateStr, timeStr, timezone);
-      if (!isFuture(when)) {
+      if (!hasScheduleLead(when, new Date(nowMs))) {
         return { iso: null, error: t('scheduleSend.pastError') };
       }
       return { iso: when.toISOString(), error: null };
@@ -90,7 +102,11 @@ export function Step4ScheduleSend({
         error: err instanceof ScheduleTimeError ? err.message : t('scheduleSend.invalidError'),
       };
     }
-  }, [dateStr, timeStr, timezone, t]);
+  }, [dateStr, timeStr, timezone, t, nowMs]);
+
+  // The date picker's earliest day, in the viewer's chosen zone (not UTC
+  // — before ~05:30 IST a UTC-based floor would wrongly offer yesterday).
+  const minDate = utcToZonedParts(new Date(nowMs), timezone).date;
 
   const canSchedule = Boolean(name.trim() && schedule.iso && !isProcessing);
 
@@ -228,7 +244,7 @@ export function Step4ScheduleSend({
               <Input
                 type="date"
                 value={dateStr}
-                min={new Date().toISOString().slice(0, 10)}
+                min={minDate}
                 onChange={(e) => setDateStr(e.target.value)}
                 className="border-border bg-muted text-foreground"
               />

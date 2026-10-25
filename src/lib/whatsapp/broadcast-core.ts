@@ -26,7 +26,8 @@ import {
   phoneVariants,
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils';
-import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
+import { resolveTemplateRow, templateContentText } from '@/lib/whatsapp/template-body';
+import { mirrorBroadcastToChat } from '@/lib/whatsapp/broadcast-chat';
 import type { MessageTemplate } from '@/types';
 import { findOrCreateContact } from '@/lib/api/v1/contacts';
 
@@ -70,10 +71,19 @@ interface PlannedRecipient {
    * the browser is closed.
    */
   messageParams?: SendTimeParams;
+  /**
+   * Contact the recipient row belongs to. Carried so the inbox mirror
+   * can reuse the exact contact instead of re-resolving the phone;
+   * optional so hand-built plans (tests, older callers) stay valid.
+   */
+  contactId?: string;
 }
 
 export interface BroadcastPlan {
   broadcastId: string;
+  /** Tenancy + audit owner the inbox mirror needs for created rows. */
+  accountId: string;
+  auditUserId: string;
   templateName: string;
   templateLanguage: string;
   phoneNumberId: string;
@@ -240,12 +250,14 @@ export async function createBroadcast(
   const planned: PlannedRecipient[] = createdRows.map(
     (row: { recipient_id: string; contact_id: string }) => {
       const r = byContact.get(row.contact_id)!;
-      return { recipientRowId: row.recipient_id, phone: r.phone, params: r.params };
+      return { recipientRowId: row.recipient_id, contactId: row.contact_id as string, phone: r.phone, params: r.params };
     }
   );
 
   return {
     broadcastId,
+    accountId,
+    auditUserId,
     templateName,
     templateLanguage: resolvedTemplate.language,
     phoneNumberId: config.phone_number_id,
@@ -311,6 +323,19 @@ export async function deliverBroadcast(
           error_message: null,
         })
         .eq('id', recipient.recipientRowId);
+      // Mirror the delivered template into the recipient's chat thread
+      // (shared with the dashboard broadcast route). Best-effort by
+      // contract — it never throws, so one mirror failure can't abort
+      // the rest of the fan-out.
+      await mirrorBroadcastToChat(db, {
+        accountId: plan.accountId,
+        userId: plan.auditUserId,
+        phone: recipient.phone,
+        contactId: recipient.contactId,
+        templateName: plan.templateName,
+        contentText: templateContentText(plan.templateRow, recipient.params),
+        whatsappMessageId: sentMessageId,
+      });
     } else {
       await db
         .from('broadcast_recipients')

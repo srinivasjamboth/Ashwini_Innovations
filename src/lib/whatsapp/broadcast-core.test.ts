@@ -120,7 +120,7 @@ describe('createBroadcast recipient validation (#586)', () => {
 
     expect(plan.rejected).toBe(2);
     expect(plan.planned).toEqual([
-      { recipientRowId: 'r-1', phone: '14155550123', params: [] },
+      { recipientRowId: 'r-1', contactId: 'c1', phone: '14155550123', params: [] },
     ]);
   });
 
@@ -153,7 +153,7 @@ describe('createBroadcast atomicity (#370)', () => {
     expect(calls.usedDirectInsert).toBe(0);
     expect(plan.broadcastId).toBe('b-1');
     expect(plan.planned).toEqual([
-      { recipientRowId: 'r-1', phone: '14155550123', params: [] },
+      { recipientRowId: 'r-1', contactId: 'c1', phone: '14155550123', params: [] },
     ]);
   });
 
