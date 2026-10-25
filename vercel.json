@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/whatsapp/broadcast/scheduled/cron",
-      "schedule": "*/1 * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
