@@ -9,9 +9,10 @@
  *   1. a LIVE admin marker bound to the owner (same store + timeouts
  *      the admin area itself uses — presence alone is never trusted),
  *      read via resolveAdminMarker. Importing the admin store from a
- *      server component is safe: it is server-only and the Map lives
- *      on globalThis, so the layout sees the exact same markers the
- *      admin API routes minted.
+ *      server component is safe: it is server-only and backed by the
+ *      durable admin_session_markers table, so the layout sees the exact
+ *      same markers the admin API routes minted — even on separate
+ *      serverless functions, where an in-process store could not.
  *   2. a Supabase session whose user is a customer, NOT the owner —
  *      the owner's own session on main-app routes is wiped by
  *      middleware long before this runs; checking again here keeps the
@@ -37,7 +38,7 @@ export async function getImpersonationState(): Promise<ImpersonationState | null
   const marker = (await cookies()).get(ADMIN_SESSION_COOKIE)?.value
   if (!marker) return null
 
-  const identity = resolveAdminMarker(marker)
+  const identity = await resolveAdminMarker(marker)
   if (!identity) return null
 
   const ownerId = process.env[ADMIN_OWNER_ENV_VAR]?.trim()

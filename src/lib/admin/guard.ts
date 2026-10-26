@@ -52,7 +52,7 @@ export function getOwnerUserId(): string | null {
  */
 export async function requireOwner(): Promise<{ userId: string; email: string }> {
   const marker = (await cookies()).get(ADMIN_SESSION_COOKIE)?.value
-  const identity = resolveAdminMarker(marker)
+  const identity = await resolveAdminMarker(marker)
 
   // No marker, or an expired one ⇒ back to the admin login. A client
   // token-holder walking straight into /ashwini-control lands here too,
@@ -88,7 +88,7 @@ export async function requireOwnerApi(): Promise<
   })
 
   const markerId = (await cookies()).get(ADMIN_SESSION_COOKIE)?.value
-  const identity = resolveAdminMarker(markerId)
+  const identity = await resolveAdminMarker(markerId)
 
   // No live admin marker ⇒ 401 (the caller isn't in an admin session).
   if (!identity) return deny(401, { error: 'unauthorized' })

@@ -25,7 +25,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const auth = await requireOwnerApi()
   if (!auth.ok) return auth.response
 
-  revokeAdminMarker(auth.markerId)
+  await revokeAdminMarker(auth.markerId)
 
   const response = NextResponse.json(
     { ok: true, redirect: ADMIN_ROOT },

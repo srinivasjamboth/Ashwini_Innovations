@@ -158,7 +158,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   await recordLoginAttempt({ attemptedEmail: email, success: true, headers: request.headers })
   await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined)
 
-  const markerId = createAdminMarker(user.id, user.email ?? '')
+  const markerId = await createAdminMarker(user.id, user.email ?? '')
   const response = NextResponse.json(
     { ok: true, redirect: ADMIN_ROOT },
     { headers: NO_STORE },
