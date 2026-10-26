@@ -93,9 +93,13 @@ function SectionCard({
 export function SubscriptionDetail({
   detail,
   plans,
+  fromMemberLedger = false,
 }: {
   detail: VaultDetailDto;
   plans: VaultPlanOption[];
+  /** Deep-linked from the Member Ledger (spec Part 3) — the back link
+   *  then returns there instead of Plan Vault. Same page, no duplicate. */
+  fromMemberLedger?: boolean;
 }) {
   const router = useRouter();
   const [panelOpen, setPanelOpen] = useState(false);
@@ -116,11 +120,11 @@ export function SubscriptionDetail({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <Link
-            href={`${ADMIN_ROOT}/plan-vault`}
+            href={fromMemberLedger ? `${ADMIN_ROOT}/member-ledger` : `${ADMIN_ROOT}/plan-vault`}
             className="inline-flex items-center gap-1.5 text-sm text-[var(--sea-600)] underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ArrowLeft className="h-4 w-4" aria-hidden={true} />
-            Plan Vault
+            {fromMemberLedger ? "Member Ledger" : "Plan Vault"}
           </Link>
           <h2 className="mt-1 text-2xl font-bold text-[var(--sea-800)]">
             {sub.planName} subscription

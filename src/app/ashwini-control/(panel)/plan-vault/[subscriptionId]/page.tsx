@@ -15,8 +15,10 @@ export const dynamic = "force-dynamic";
 
 export default async function SubscriptionDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ subscriptionId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { userId } = await requireOwner();
   const { subscriptionId } = await params;
@@ -29,5 +31,10 @@ export default async function SubscriptionDetailPage({
   // list page (plans + plan_prices, never hard-coded).
   const { plans } = await getVaultPlanOptions();
 
-  return <SubscriptionDetail detail={detail} plans={plans} />;
+  // Deep-linked from the Member Ledger (spec Part 3)? Then the back link
+  // returns to the ledger instead of the Vault — same page, no duplicate.
+  const sp = await searchParams;
+  const fromMemberLedger = sp.from === "member-ledger";
+
+  return <SubscriptionDetail detail={detail} plans={plans} fromMemberLedger={fromMemberLedger} />;
 }

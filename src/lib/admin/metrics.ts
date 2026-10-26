@@ -21,12 +21,12 @@
 import { supabaseAdmin } from './supabase-admin'
 import { getLastSuccessfulLogin } from './audit'
 import { computeEffectiveStatus } from '@/lib/plans/entitlements'
+import { resolveRangeMs } from './vault'
 import {
-  ACTIVE_WINDOW_DAYS,
   ADMIN_TIMEZONE,
   CHART_MONTHS,
-  FRESH_USERS_LIMIT,
-  LEDGER_PAGE_SIZE,
+  LEDGER_DEFAULT_PAGE_SIZE,
+  USERS_DEFAULT_PAGE_SIZE,
 } from './constants'
 
 // ------------------------------------------------------------
@@ -53,6 +53,14 @@ export interface FreshUser {
 
 export interface PulseBundle {
   totalUsers: number
+  /**
+   * Active Users — redefined (spec Part 1B): customers with a currently
+   * active PAID subscription (the SAME set as Subscribers, computed from
+   * the one shared effective-status function). Free-trial, expired,
+   * cancelled and no-subscription customers are NOT counted. The old
+   * "signed in within 30 days" definition and its ACTIVE_WINDOW_DAYS
+   * constant are gone.
+   */
   activeUsers: number
   totalCampaigns: number
   contacts: number
@@ -60,6 +68,9 @@ export interface PulseBundle {
   freeUsers: number
   months: MonthPoint[]
   freshUsers: FreshUser[]
+  /** Total customers behind the fresh-users table (all pages), so the
+   *  pager footer reads "Showing 1 to 10 of N". */
+  freshUsersTotal: number
   lastLoginAt: string | null
   /** False when the schema has no subscriptions/plans yet — the UI
    *  still renders Monthly/Yearly affordances, they simply show zero. */
@@ -298,20 +309,11 @@ async function computeNewUsersByMonth(ownerUserId: string): Promise<MonthPoint[]
   })
 }
 
-/** admin_active_user_count, computed from profiles. */
-async function computeActiveUserCount(ownerUserId: string): Promise<number> {
-  const threshold = new Date(
-    Date.now() - ACTIVE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
-  ).toISOString()
-  const { count, error } = await supabaseAdmin()
-    .from('profiles')
-    .select('user_id', { count: 'exact', head: true })
-    .eq('account_role', 'owner')
-    .neq('user_id', ownerUserId)
-    .or(`updated_at.gte.${threshold},created_at.gte.${threshold}`)
-  if (error) throw error
-  return count ?? 0
-}
+/** admin_active_user_count — REMOVED (spec Part 1B). "Active Users" is no
+ *  longer a 30-day sign-in/activity window; it is now the set of customers
+ *  with a currently active PAID subscription, which is exactly what
+ *  activePaidSubscriberCount() returns. The card reads that single metric
+ *  so Active Users and Subscribers can never disagree. */
 
 /** admin_recent_customers, computed from profiles (newest first). */
 async function computeRecentCustomers(
@@ -337,6 +339,9 @@ async function computeRecentCustomers(
     .eq('account_role', 'owner')
     .neq('user_id', ownerUserId)
     .order('created_at', { ascending: false })
+    // Stable tie-breaker so a customer whose created_at equals a
+    // neighbour's never repeats or drops between pages.
+    .order('user_id', { ascending: false })
     .limit(Math.min(Math.max(limit, 1), 200))
   if (error) throw error
   return ((data ?? []) as unknown as {
@@ -364,7 +369,6 @@ export async function getPulseBundle(ownerUserId: string): Promise<PulseBundle> 
   // Independent queries fire in parallel (spec §7).
   const ownerAccountP = getOwnerAccountId(ownerUserId)
   const totalP = countCustomers(ownerUserId)
-  const activeP = computeActiveUserCount(ownerUserId)
   const campaignsP = ownerAccountP.then(async (accountId) => {
     let q = db.from('broadcasts').select('id', { count: 'exact', head: true })
     if (accountId) q = q.neq('account_id', accountId)
@@ -380,7 +384,9 @@ export async function getPulseBundle(ownerUserId: string): Promise<PulseBundle> 
     return count ?? 0
   })
   const monthsP = computeNewUsersByMonth(ownerUserId)
-  const freshP = computeRecentCustomers(ownerUserId, FRESH_USERS_LIMIT).then(
+  // Page 1 of the fresh-users table, default size — deeper pages come
+  // from getFreshUsersPage so this bundle stays as light as before.
+  const freshP = computeRecentCustomers(ownerUserId, USERS_DEFAULT_PAGE_SIZE).then(
     async (rows) => {
       const { map, available } = await lookupSubscriptions(rows.map((x) => x.user_id))
       const users: FreshUser[] = rows.map((x) => ({
@@ -396,38 +402,86 @@ export async function getPulseBundle(ownerUserId: string): Promise<PulseBundle> 
   )
   const lastLoginP = getLastSuccessfulLogin()
 
-  const [total, active, campaigns, contacts, months, fresh, lastLoginAt] = await Promise.all([
+  // Active Users === Subscribers: ONE metric, one effective-status
+  // function, so the two cards can never disagree (spec Part 1B §2).
+  const subsP = activePaidSubscriberCount(ownerUserId)
+
+  const [total, campaigns, contacts, months, fresh, lastLoginAt, subs] = await Promise.all([
     totalP,
-    activeP,
     campaignsP,
     contactsP,
     monthsP,
     freshP,
     lastLoginP,
+    subsP,
   ])
 
-  // Subscribers: customers whose lookup produced a paid subscription
-  // (status active AND plan price > 0 — enforced inside
-  // lookupSubscriptions/cycleToType). Full-table count when the schema
-  // exists is the same filter over every customer, so we count from the
-  // ledger-wide lookup rather than the 10-row page:
-  const { subscriberCount, available } = fresh.available
-    ? await activePaidSubscriberCount(ownerUserId)
-    : { subscriberCount: 0, available: false }
+  const available = fresh.available && subs.available
+  const subscriberCount = subs.available ? subs.subscriberCount : 0
 
   return {
     totalUsers: total,
-    activeUsers: active,
+    // Same set as Subscribers (active paid) — trial/expired/cancelled
+    // excluded by construction inside activePaidSubscriberCount.
+    activeUsers: subscriberCount,
     totalCampaigns: campaigns,
     contacts,
     subscribers: subscriberCount,
-    // Guarantees Free + Subscribers = Total by construction.
+    // Guarantees Free + Active(=Subscribers) = Total by construction.
     freeUsers: total - subscriberCount,
     months,
     freshUsers: fresh.users,
+    freshUsersTotal: total,
     lastLoginAt,
     subscriptionsAvailable: available,
   }
+}
+
+/** One page of the Pulse fresh-users table (spec Part 1B §4). Server-side
+ *  paging over ALL customers (owner excluded), newest first, tie-broken
+ *  by created_at then id, independent of the cards/chart bundle. */
+export async function getFreshUsersPage(
+  ownerUserId: string,
+  opts: { page?: number; pageSize?: number } = {},
+): Promise<{ rows: FreshUser[]; total: number; page: number; pageSize: number; subscriptionsAvailable: boolean }> {
+  const page = Math.max(1, Math.floor(opts.page ?? 1) || 1)
+  const size = Math.min(
+    Math.max(Math.floor(opts.pageSize ?? USERS_DEFAULT_PAGE_SIZE) || USERS_DEFAULT_PAGE_SIZE, 1),
+    200,
+  )
+  const hasPhone = await profilesHasPhone()
+  const { data, count, error } = await supabaseAdmin()
+    .from('profiles')
+    .select(
+      hasPhone
+        ? 'user_id,full_name,email,phone,created_at'
+        : 'user_id,full_name,email,created_at',
+      { count: 'exact' },
+    )
+    .eq('account_role', 'owner')
+    .neq('user_id', ownerUserId)
+    .order('created_at', { ascending: false })
+    .order('user_id', { ascending: false })
+    .range((page - 1) * size, page * size - 1)
+  if (error) throw error
+
+  const rows0 = (data ?? []) as unknown as {
+    user_id: string
+    full_name: string
+    email: string
+    phone?: string | null
+    created_at: string
+  }[]
+  const { map, available } = await lookupSubscriptions(rows0.map((x) => x.user_id))
+  const rows: FreshUser[] = rows0.map((x) => ({
+    userId: x.user_id,
+    fullName: x.full_name,
+    email: x.email,
+    phone: x.phone ?? null,
+    registeredAt: x.created_at,
+    subscriptionType: map.get(x.user_id)?.type ?? 'Free',
+  }))
+  return { rows, total: count ?? 0, page, pageSize: size, subscriptionsAvailable: available }
 }
 
 /** Count of customers with an EFFECTIVELY active paid subscription
@@ -474,6 +528,8 @@ async function activePaidSubscriberCount(
 
 export interface MemberQuery {
   page?: number
+  /** Entries per page (10/25/50/100). Defaults to LEDGER_DEFAULT_PAGE_SIZE. */
+  pageSize?: number
   q?: string
   sort?: 'newest' | 'oldest'
   /** Subscription-type / plan / status filters. With no billing schema
@@ -482,6 +538,10 @@ export interface MemberQuery {
   subscription?: 'free' | 'monthly' | 'yearly'
   plan?: string
   status?: string
+  /** Registered-date window (inclusive calendar days, Asia/Kolkata),
+   *  applied DB-side on profiles.created_at. 'YYYY-MM-DD' or null. */
+  from?: string | null
+  to?: string | null
 }
 
 export async function getMemberPage(
@@ -489,7 +549,10 @@ export async function getMemberPage(
   query: MemberQuery,
 ): Promise<MemberPage> {
   const page = Math.max(1, Math.floor(query.page ?? 1))
-  const pageSize = LEDGER_PAGE_SIZE
+  const pageSize = Math.min(
+    Math.max(Math.floor(query.pageSize ?? LEDGER_DEFAULT_PAGE_SIZE) || LEDGER_DEFAULT_PAGE_SIZE, 1),
+    100,
+  )
   const hasPhone = await profilesHasPhone()
 
   let q = supabaseAdmin()
@@ -514,8 +577,21 @@ export async function getMemberPage(
     q = q.or(clauses.join(','))
   }
 
+  // Registered-date window, applied DB-side so it composes with search +
+  // pagination (unlike the post-fetch subscription/plan/status filters).
+  // Day boundaries are cut in the admin timezone via the SAME shared
+  // helper the Plan Vault uses (resolveRangeMs → Asia/Kolkata).
+  const { startMs, endExclusiveMs } = resolveRangeMs(query.from ?? null, query.to ?? null)
+  if (startMs !== null) q = q.gte('created_at', new Date(startMs).toISOString())
+  if (endExclusiveMs !== null) q = q.lt('created_at', new Date(endExclusiveMs).toISOString())
+
   const order = query.sort === 'oldest' ? { ascending: true } : { ascending: false }
-  q = q.order('created_at', order).range((page - 1) * pageSize, page * pageSize - 1)
+  q = q
+    .order('created_at', order)
+    // Stable tie-breaker so equal created_at rows never repeat/skip
+    // across pages (spec Part 1 sort contract).
+    .order('user_id', order)
+    .range((page - 1) * pageSize, page * pageSize - 1)
 
   const { data, count, error } = await q
   if (error) throw error
@@ -559,6 +635,128 @@ export async function getMemberPage(
   }
 
   return { rows, total: count ?? 0, page, pageSize, subscriptionsAvailable: available }
+}
+
+// ------------------------------------------------------------
+// Member Ledger — lazy expandable row detail (spec Part 1)
+//
+// Fired only when the admin opens a row, so the list query above stays
+// light. Everything is read straight from the tenant tables via the
+// service-role client; nothing is hard-coded. Missing tables degrade
+// to zeros / null rather than erroring the row.
+// ------------------------------------------------------------
+
+export interface MemberDetail {
+  accountName: string | null
+  /** Meta phone_number_id of the connected WhatsApp Business number. */
+  whatsappNumberId: string | null
+  whatsappStatus: 'connected' | 'disconnected' | 'none'
+  lastActiveAt: string | null
+  contacts: number
+  campaigns: number
+  teamMembers: number
+  /** Id of the customer's most recent subscription record, so the
+   *  expanded row can deep-link the EXISTING Plan Vault detail page
+   *  (spec Part 3). Null when the billing schema is absent or the
+   *  customer has never had one — the UI then shows “No subscription yet”. */
+  latestSubscriptionId: string | null
+}
+
+async function countByAccount(table: 'contacts' | 'broadcasts', accountId: string): Promise<number> {
+  const { count, error } = await supabaseAdmin()
+    .from(table)
+    .select('id', { count: 'exact', head: true })
+    .eq('account_id', accountId)
+  if (error) {
+    if (!isMissingTable(error)) console.error(`[admin-metrics] ${table} count failed:`, error)
+    return 0
+  }
+  return count ?? 0
+}
+
+/** Detail for one customer's expanded ledger row. Returns null for the
+ *  platform owner or a non-existent profile so the endpoint can 404
+ *  without leaking. */
+export async function getMemberDetail(
+  ownerUserId: string,
+  userId: string,
+): Promise<MemberDetail | null> {
+  if (!userId || userId === ownerUserId) return null
+  const db = supabaseAdmin()
+
+  const { data: prof, error } = await db
+    .from('profiles')
+    .select('account_id,account_role,updated_at')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (isMissingTable(error)) return null
+  if (error) throw error
+  if (!prof) return null
+
+  const accountId = (prof as { account_id: string | null }).account_id
+  const lastActiveAt = (prof as { updated_at: string | null }).updated_at ?? null
+
+  // No account linked (only possible on an un-backfilled project): show
+  // what we know and zero the rest rather than fabricating rows.
+  if (!accountId) {
+    return {
+      accountName: null,
+      whatsappNumberId: null,
+      whatsappStatus: 'none',
+      lastActiveAt,
+      contacts: 0,
+      campaigns: 0,
+      teamMembers: 0,
+      latestSubscriptionId: null,
+    }
+  }
+
+  // Newest subscription record for this customer, if the billing
+  // schema exists. Missing table ⇒ null (honest, not an error).
+  const latestSubP: Promise<string | null> = (async () => {
+    try {
+      const r = await db
+        .from('subscriptions')
+        .select('id')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (isMissingTable(r.error)) return null
+      return ((r.data as { id: string } | null)?.id) ?? null
+    } catch {
+      return null
+    }
+  })()
+
+  const [accountRes, waRes, teamRes, contacts, campaigns, latestSub] = await Promise.all([
+    db.from('accounts').select('name').eq('id', accountId).maybeSingle(),
+    db
+      .from('whatsapp_config')
+      .select('status,phone_number_id')
+      .eq('account_id', accountId)
+      .maybeSingle(),
+    db
+      .from('profiles')
+      .select('user_id', { count: 'exact', head: true })
+      .eq('account_id', accountId),
+    countByAccount('contacts', accountId),
+    countByAccount('broadcasts', accountId),
+    latestSubP,
+  ])
+
+  const wa = waRes.data as { status?: string; phone_number_id?: string } | null
+
+  return {
+    accountName: (accountRes.data as { name?: string } | null)?.name ?? null,
+    whatsappNumberId: wa?.phone_number_id ?? null,
+    whatsappStatus: wa?.status === 'connected' ? 'connected' : wa ? 'disconnected' : 'none',
+    lastActiveAt,
+    contacts,
+    campaigns,
+    teamMembers: teamRes.count ?? 0,
+    latestSubscriptionId: latestSub,
+  }
 }
 
 // ------------------------------------------------------------

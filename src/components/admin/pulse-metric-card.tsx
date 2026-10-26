@@ -94,6 +94,14 @@ function hashRandom(seed: number): number {
   return x - Math.floor(x);
 }
 
+/** Snap a derived CSS value to a whole number so the string React emits
+ *  during SSR is byte-identical to what the browser's CSSOM reads back
+ *  during hydration (browsers normalize floats to ~6 significant digits,
+ *  which otherwise produces a hydration-mismatch warning). */
+function cssInt(n: number): number {
+  return Math.round(n);
+}
+
 /**
  * Perspective host for the card grid: tilts toward the cursor
  * (rotateX/rotateY, /25 divisor, 1500px perspective) and floats 20
@@ -131,19 +139,25 @@ export function FloatingCardGrid({
       className="relative overflow-hidden py-2"
       style={{ perspective: "1500px" }}
     >
-      {/* Ambient background particles */}
+      {/* Ambient background particles. Values are snapped to integers and
+          the animation is declared via longhands so SSR output and the
+          browser's normalized CSSOM are byte-identical (no hydration
+          mismatch). */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden={true}>
         {Array.from({ length: 20 }).map((_, i) => (
           <div
             key={i}
             className="absolute rounded-full bg-[var(--sea-800)] opacity-10"
             style={{
-              width: `${hashRandom(i) * 6 + 1}px`,
-              height: `${hashRandom(i + 51) * 6 + 1}px`,
-              top: `${hashRandom(i + 102) * 100}%`,
-              left: `${hashRandom(i + 153) * 100}%`,
-              animation: `ashwini-admin-float ${hashRandom(i + 204) * 10 + 20}s linear infinite`,
-              animationDelay: `${hashRandom(i + 255) * 20}s`,
+              width: `${cssInt(hashRandom(i) * 6 + 1)}px`,
+              height: `${cssInt(hashRandom(i + 51) * 6 + 1)}px`,
+              top: `${cssInt(hashRandom(i + 102) * 100)}%`,
+              left: `${cssInt(hashRandom(i + 153) * 100)}%`,
+              animationName: 'ashwini-admin-float',
+              animationDuration: `${cssInt(hashRandom(i + 204) * 10 + 20)}s`,
+              animationTimingFunction: 'linear',
+              animationIterationCount: 'infinite',
+              animationDelay: `${cssInt(hashRandom(i + 255) * 20)}s`,
             }}
           />
         ))}
@@ -245,7 +259,7 @@ export function PulseMetricCard({
             "absolute -right-4 -top-4 size-24 rounded-full bg-gradient-to-r opacity-30 blur-xl",
             styles.orb,
           )}
-          style={{ transform: `translateZ(${hashRandom(index + 7) * 10 + 10}px)` }}
+          style={{ transform: `translateZ(${cssInt(hashRandom(index + 7) * 10 + 10)}px)` }}
           aria-hidden={true}
         />
 

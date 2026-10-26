@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import {
   Activity,
   Contact,
@@ -12,11 +11,7 @@ import {
   Users,
 } from "lucide-react";
 import type { PulseBundle } from "@/lib/admin/metrics";
-import {
-  ADMIN_ROOT,
-  ACTIVE_WINDOW_DAYS,
-} from "@/lib/admin/constants";
-import { EmptyState } from "@/components/dashboard/empty-state";
+import { ADMIN_ROOT } from "@/lib/admin/constants";
 import { Skeleton } from "@/components/dashboard/skeleton";
 import { Button } from "@/components/ui/button";
 import { NewUsersChart } from "./new-users-chart";
@@ -26,7 +21,8 @@ import {
   PulseMetricError,
   PulseMetricSkeleton,
 } from "./pulse-metric-card";
-import { SubscriptionBadge, formatLastLogin, formatRegistered } from "./admin-format";
+import { FreshUsersTable } from "./fresh-users-table";
+import { formatLastLogin } from "./admin-format";
 
 /**
  * Pulse — the dashboard page body. Fetches the guarded server bundle
@@ -74,7 +70,8 @@ export function PulseDashboard({ ownerName }: { ownerName: string }) {
           value: data.activeUsers,
           icon: Activity,
           accent: "deep" as const,
-          definition: `Customers with a sign-in or recorded activity in the last ${ACTIVE_WINDOW_DAYS} days.`,
+          definition:
+            "Customers with a currently active paid subscription. Free trial users are not counted.",
         },
         {
           key: "campaigns",
@@ -99,7 +96,7 @@ export function PulseDashboard({ ownerName }: { ownerName: string }) {
           icon: UserMinus,
           accent: "slate" as const,
           definition:
-            "Total Users minus Subscribers — trial, expired trial, free plan, canceled, or no subscription. Free + Subscribers = Total.",
+            "Total Users minus Active Users — trial, expired trial, free plan, canceled, or no subscription. Free + Active = Total.",
         },
         {
           key: "subs",
@@ -108,7 +105,7 @@ export function PulseDashboard({ ownerName }: { ownerName: string }) {
           icon: UserPlus,
           accent: "steel" as const,
           definition:
-            "Customers whose subscription is EFFECTIVELY active right now (shared effective-status function, plan price greater than 0).",
+            "Customers with a currently active paid subscription (shared effective-status function, plan price greater than 0). This is the same group as Active Users.",
         },
       ]
     : [];
@@ -168,72 +165,9 @@ export function PulseDashboard({ ownerName }: { ownerName: string }) {
         <NewUsersChart months={data.months} />
       ) : null}
 
-      {/* User Registrations */}
-      <section className="rounded-xl border border-border bg-card">
-        <header className="flex items-center justify-between gap-2 border-b border-border px-5 py-4">
-          <div>
-            <h2 className="text-sm font-semibold text-foreground">User Registrations</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              The {data?.freshUsers.length ?? 10} most recent registrations, newest first
-            </p>
-          </div>
-          <Link
-            href={`${ADMIN_ROOT}/member-ledger`}
-            className="text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
-          >
-            View all
-          </Link>
-        </header>
-
-        {loading ? (
-          <div className="space-y-2 p-5">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-10 w-full" />
-            ))}
-          </div>
-        ) : error ? (
-          <div className="p-5">
-            <PulseMetricError onRetry={() => void load()} />
-          </div>
-        ) : !data || data.freshUsers.length === 0 ? (
-          <div className="p-5">
-            <EmptyState
-              title="No registrations yet"
-              hint="New customers show up here the moment they register."
-              icon={UserPlus}
-            />
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <caption className="sr-only">Most recent customer registrations</caption>
-              <thead>
-                <tr className="border-b border-border text-left text-xs font-medium text-muted-foreground">
-                  <th scope="col" className="px-5 py-2.5">User</th>
-                  <th scope="col" className="px-5 py-2.5">Registered</th>
-                  <th scope="col" className="px-5 py-2.5">Subscription</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.freshUsers.map((u) => (
-                  <tr key={u.userId} className="border-b border-border/60 last:border-0">
-                    <td className="px-5 py-3">
-                      <p className="font-medium text-foreground">{u.fullName || "—"}</p>
-                      <p className="text-xs text-muted-foreground">{u.email}</p>
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-3 text-muted-foreground">
-                      {formatRegistered(u.registeredAt)}
-                    </td>
-                    <td className="px-5 py-3">
-                      <SubscriptionBadge type={u.subscriptionType} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      {/* User Registrations — server-paged via the shared <Pagination>
+          + paging effect (spec Part 1B §4). Independent of the cards. */}
+      <FreshUsersTable />
 
       {/* Billing-schema honesty note (spec §3/§6): the Monthly/Yearly
           affordances render regardless; this line tells the owner why

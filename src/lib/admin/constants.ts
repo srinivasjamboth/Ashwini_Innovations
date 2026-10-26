@@ -30,9 +30,6 @@ export const BRAND_LOGO_SRC = '/logo.jpeg';
 // Metric windows
 // ------------------------------------------------------------
 
-/** Active Users look-back: sign-in / activity within this many days. */
-export const ACTIVE_WINDOW_DAYS = 30;
-
 /** Chart window: trailing months, ending in the current month. */
 export const CHART_MONTHS = 12;
 
@@ -40,11 +37,23 @@ export const CHART_MONTHS = 12;
 export const ADMIN_TIMEZONE =
   process.env.NEXT_PUBLIC_APP_TIMEZONE || 'Asia/Kolkata';
 
-/** Fresh-users table size on Pulse. */
+/** Pulse fresh-users table — default rows on the first render. */
 export const FRESH_USERS_LIMIT = 10;
 
-/** Member Ledger page size. */
-export const LEDGER_PAGE_SIZE = 25;
+/** Member Ledger entries selector (spec Part 1: 10/25/50/100, default 25,
+ *  remembered in localStorage). */
+export const LEDGER_PAGE_SIZES = [10, 25, 50, 100] as const;
+export const LEDGER_DEFAULT_PAGE_SIZE = 25;
+export const LEDGER_PAGE_SIZE_STORAGE_KEY = "ashwini:ledger-page-size";
+
+/** Pulse fresh-users entries selector (spec Part 1B: 10/25/50, default 10,
+ *  remembered in localStorage) + its OWN URL params so they never clash
+ *  with the Member Ledger's. */
+export const USERS_PAGE_SIZES = [10, 25, 50] as const;
+export const USERS_DEFAULT_PAGE_SIZE = 10;
+export const USERS_PAGE_SIZE_STORAGE_KEY = "ashwini:pulse-users-page-size";
+export const USERS_PAGE_PARAM = "usersPage";
+export const USERS_PAGE_SIZE_PARAM = "usersPageSize";
 
 /** Member Ledger search: min characters before we hit the database. */
 export const LEDGER_MIN_QUERY_LENGTH = 2;
@@ -95,6 +104,35 @@ export const ADMIN_SESSION_ABSOLUTE_MS = 8 * 60 * 60 * 1000;
 
 /** Cookie maxAge in seconds — equals the absolute timeout. */
 export const ADMIN_SESSION_COOKIE_MAXAGE_S = ADMIN_SESSION_ABSOLUTE_MS / 1000;
+
+// ------------------------------------------------------------
+// Impersonation (Login-as-user)
+// ------------------------------------------------------------
+
+/**
+ * Page prefixes an impersonated admin session cannot open in the
+ * customer app. Everything destructive or credential-changing lives
+ * here: the settings area (password form, email change, API-key
+ * management, billing tab) and the authenticated password-reset page.
+ * Blocked in middleware on a marker-cookie check — see
+ * src/middleware.ts for why presence-only is the right edge primitive.
+ */
+export const IMPERSONATION_BLOCKED_PAGES = ['/settings', '/reset-password'] as const;
+
+/**
+ * API prefixes blocked while impersonating. Covers the actions the
+ * page block protects: API-key create/list/reveal/delete and the
+ * payment checkout (subscribe / upgrade / renew). Read-only billing
+ * (entitlements snapshot, payments history) stays open — the app
+ * needs the snapshot to render, and reading is not a mutation.
+ */
+export const IMPERSONATION_BLOCKED_APIS = [
+  '/api/account/api-keys',
+  '/api/billing/checkout',
+] as const;
+
+/** Where the middleware sends an impersonated page visit that hit the block. */
+export const IMPERSONATION_BLOCKED_REDIRECT = '/dashboard?impersonation=blocked';
 
 // ------------------------------------------------------------
 // Login throttling

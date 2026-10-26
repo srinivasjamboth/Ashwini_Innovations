@@ -351,9 +351,18 @@ function VaultInner() {
             ) : (
               <div className="flex flex-col gap-1">
                 {planOptions.map((p) => (
-                  <label key={p.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60">
-                    <Checkbox checked={plans.includes(p.id)} onCheckedChange={() => togglePlan(p.id)} aria-label={p.name} />
-                    {p.name}
+                  <label key={p.id} className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60">
+                    <Checkbox className="mt-0.5" checked={plans.includes(p.id)} onCheckedChange={() => togglePlan(p.id)} aria-label={p.name} />
+                    {/* Name + description from the same plans.tagline row
+                        the public pricing cards render — one source. */}
+                    <span className="min-w-0">
+                      <span className="block font-medium">{p.name}</span>
+                      {p.tagline && (
+                        <span className="block truncate text-xs text-muted-foreground" title={p.tagline}>
+                          {p.tagline}
+                        </span>
+                      )}
+                    </span>
                   </label>
                 ))}
               </div>

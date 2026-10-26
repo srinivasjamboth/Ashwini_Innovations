@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { DashboardShell } from "./dashboard-shell";
 import { ensureBroadcastSchedulerArmed } from "@/lib/whatsapp/broadcast-scheduler-arm";
+import { getImpersonationState } from "@/lib/auth/impersonation-state";
+import { ImpersonationBanner } from "@/components/auth/impersonation-banner";
 
 // Server layout whose only job is to declare "do not index" metadata
 // for the authed app. robots.ts already disallows these paths at the
@@ -20,7 +22,7 @@ export const metadata: Metadata = {
   },
 };
 
-export default function DashboardLayout({
+export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
@@ -32,5 +34,14 @@ export default function DashboardLayout({
   // page starts the ~30s tick that fires due campaigns. globalThis guard
   // makes this a no-op after the first arm, so it is safe per render.
   ensureBroadcastSchedulerArmed();
-  return <DashboardShell>{children}</DashboardShell>;
+  // Super Admin login-as-user: render the un-closable banner whenever this
+  // browser pairs a live admin marker with a customer session (cheap —
+  // returns null before any auth call when no marker cookie exists).
+  const impersonation = await getImpersonationState();
+  return (
+    <>
+      {impersonation && <ImpersonationBanner customerEmail={impersonation.customerEmail} />}
+      <DashboardShell>{children}</DashboardShell>
+    </>
+  );
 }

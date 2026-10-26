@@ -447,3 +447,29 @@ html[data-admin="1"] {
     animation: none !important;
   }
 }
+
+/* ------------------------------------------------------------------
+ * Admin shared table paging effect (Member Ledger + Pulse fresh-users).
+ * New rows fade in over ~150 ms when a page arrives. Scoped to the
+ * `.admin-paged-fade` class the admin tables apply, and disabled under
+ * prefers-reduced-motion so the fade never runs against a user's
+ * motion preference (spec Part 1B §4).
+ * ------------------------------------------------------------------ */
+@keyframes ashwini-admin-fade {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.admin-paged-fade {
+  animation: ashwini-admin-fade 150ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-paged-fade {
+    animation: none !important;
+  }
+}

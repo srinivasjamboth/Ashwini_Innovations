@@ -508,13 +508,17 @@ async function profilesHavePhone(): Promise<boolean> {
 export interface VaultPlanOption {
   id: string
   name: string
+  /** Plan description — the SAME `plans.tagline` column the public
+   *  pricing cards render (lib/plans/catalog), so admin and pricing
+   *  can never drift. */
+  tagline: string | null
   prices: { monthly: number | null; yearly: number | null }
 }
 
 export async function getVaultPlanOptions(): Promise<{ plans: VaultPlanOption[]; available: boolean }> {
   const db = supabaseAdmin()
   const [plansRes, pricesRes] = await Promise.all([
-    db.from('plans').select('id,name,sort,is_public').eq('is_public', true).order('sort', { ascending: true }),
+    db.from('plans').select('id,name,tagline,sort,is_public').eq('is_public', true).order('sort', { ascending: true }),
     db.from('plan_prices').select('plan_id,billing_cycle,amount'),
   ])
   if (isMissingSchema(plansRes.error)) return { plans: [], available: false }
@@ -524,9 +528,10 @@ export async function getVaultPlanOptions(): Promise<{ plans: VaultPlanOption[];
     priceMap.set(`${p.plan_id}:${p.billing_cycle}`, Number(p.amount))
   }
   return {
-    plans: ((plansRes.data ?? []) as { id: string; name: string }[]).map((p) => ({
+    plans: ((plansRes.data ?? []) as { id: string; name: string; tagline: string | null }[]).map((p) => ({
       id: p.id,
       name: p.name,
+      tagline: p.tagline ?? null,
       prices: {
         monthly: priceMap.get(`${p.id}:monthly`) ?? null,
         yearly: priceMap.get(`${p.id}:yearly`) ?? null,

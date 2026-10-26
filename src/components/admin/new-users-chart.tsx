@@ -146,9 +146,15 @@ export function NewUsersChart({ months }: { months: MonthPoint[] }) {
               content={({ active, payload }) => {
                 if (!active || !payload?.length) return null;
                 const p = payload[0].payload as ChartDatum;
+                // In Cumulative mode the value is a running total, not the
+                // month's new signups — label it so the tooltip can't mislead.
+                const unit =
+                  mode === "new"
+                    ? `new user${p.value === 1 ? "" : "s"}`
+                    : `total user${p.value === 1 ? "" : "s"}`;
                 return (
                   <div className="rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md">
-                    {p.label}: {p.value.toLocaleString()} new user{p.value === 1 ? "" : "s"}
+                    {p.label}: {p.value.toLocaleString()} {unit}
                   </div>
                 );
               }}

@@ -138,3 +138,52 @@ describe("middleware — every dashboard route requires a session", () => {
     expect(new URL(res.headers.get("location")!).pathname).toBe("/login");
   });
 });
+
+describe("middleware — impersonated sessions are denied sensitive surfaces", () => {
+  // The impersonation fingerprint is an admin marker cookie presented
+  // TOGETHER with a live customer session. Page hits redirect off the
+  // blocked surface; API hits get a 403 JSON. Carrying the rotated
+  // cookies through both answers is mandatory (issue #288 again).
+  const marker = { headers: { cookie: "ashwini_admin_sid=m-1" } };
+
+  it("redirects an impersonated /settings visit to /dashboard", async () => {
+    mockUser = { id: "cust-1" };
+    refreshedCookies = [ROTATED];
+
+    const res = await middleware(new NextRequest("https://app.test/settings", marker));
+
+    expect(res.status).toBe(307);
+    const loc = new URL(res.headers.get("location")!);
+    expect(loc.pathname).toBe("/dashboard");
+    expect(loc.searchParams.get("impersonation")).toBe("blocked");
+    expect(res.cookies.get(ROTATED.name)?.value).toBe(ROTATED.value);
+  });
+
+  it("403s impersonated API-key and checkout calls", async () => {
+    mockUser = { id: "cust-1" };
+
+    for (const path of ["/api/account/api-keys", "/api/billing/checkout"]) {
+      const res = await middleware(new NextRequest(`https://app.test${path}`, marker));
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it("leaves a normal signed-in customer untouched", async () => {
+    mockUser = { id: "cust-1" };
+
+    const res = await middleware(new NextRequest("https://app.test/settings"));
+
+    expect(res.headers.get("location")).toBeNull();
+    expect(res.status).toBe(200);
+  });
+
+  it("does not block an impersonated read-only billing snapshot fetch", async () => {
+    mockUser = { id: "cust-1" };
+
+    const res = await middleware(
+      new NextRequest("https://app.test/api/billing/entitlements", marker),
+    );
+
+    expect(res.status).toBe(200);
+  });
+});

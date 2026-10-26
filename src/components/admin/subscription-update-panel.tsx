@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowLeft, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { ADMIN_ROOT, ADMIN_TIMEZONE } from "@/lib/admin/constants";
 import type { VaultPlanOption, VaultRowDto, VaultStatus } from "@/lib/admin/vault";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -127,6 +128,14 @@ function PanelInner({ subscription, plans, onClose, onUpdated }: PanelProps) {
     [extendBase],
   );
 
+  // The chosen plan's description + prices — the SAME plans.tagline /
+  // plan_prices rows the public pricing cards render (source of truth
+  // is the database, never a hard-coded copy).
+  const selectedPlan = useMemo(
+    () => plans.find((p) => p.id === planId) ?? null,
+    [plans, planId],
+  );
+
   const setField = useCallback((patch: Record<string, string>) => {
     setFieldErrors((prev) => {
       const next = { ...prev };
@@ -170,7 +179,11 @@ function PanelInner({ subscription, plans, onClose, onUpdated }: PanelProps) {
     const beforeExpiry = base.expiresOn ? formatDay(base.expiresOn) : "—";
     const afterExpiry = expiry ? formatDay(`${expiry}T12:00:00Z`) : "—";
     if (beforeExpiry !== afterExpiry) list.push({ label: "Expiry", before: beforeExpiry, after: afterExpiry });
-    if (status !== initialStatus(base.status) || status !== base.status) {
+    // Compare against the NORMALISED starting value — trial / past-due
+    // rows open the panel as Active, so comparing with the raw
+    // base.status too made every one of them review a phantom
+    // "Trial → Active" change the admin never made.
+    if (status !== initialStatus(base.status)) {
       list.push({ label: "Status", before: statusLabel(base.status), after: statusLabel(status) });
     }
     const amt = Number(amount) || 0;
@@ -316,7 +329,25 @@ function PanelInner({ subscription, plans, onClose, onUpdated }: PanelProps) {
                     No public plans found — the plans table feeds this list.
                   </p>
                 )}
-                {fieldErrors.planId && <p className="text-xs text-red-600">{fieldErrors.planId}</p>}
+                {fieldErrors.planId && <p role="alert" className="text-xs text-red-600">{fieldErrors.planId}</p>}
+                {selectedPlan && (selectedPlan.tagline || selectedPlan.prices.monthly != null || selectedPlan.prices.yearly != null) && (
+                  <div className="mt-1.5 rounded-lg border border-[var(--sea-200)] bg-[var(--sea-50)] px-3 py-2 text-xs">
+                    {selectedPlan.tagline && <p className="text-foreground">{selectedPlan.tagline}</p>}
+                    <p
+                      className={cn(
+                        "flex flex-wrap gap-x-3 tabular-nums text-muted-foreground",
+                        selectedPlan.tagline && "mt-1",
+                      )}
+                    >
+                      <span className={cycle === "monthly" ? "font-medium text-[var(--sea-800)]" : undefined}>
+                        Monthly: {selectedPlan.prices.monthly == null ? "—" : formatInr(selectedPlan.prices.monthly)}
+                      </span>
+                      <span className={cycle === "yearly" ? "font-medium text-[var(--sea-800)]" : undefined}>
+                        Yearly: {selectedPlan.prices.yearly == null ? "—" : formatInr(selectedPlan.prices.yearly)}
+                      </span>
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div className="space-y-1.5">
@@ -330,7 +361,7 @@ function PanelInner({ subscription, plans, onClose, onUpdated }: PanelProps) {
                   <option value="monthly">Monthly</option>
                   <option value="yearly">Yearly</option>
                 </select>
-                {fieldErrors.billingCycle && <p className="text-xs text-red-600">{fieldErrors.billingCycle}</p>}
+                {fieldErrors.billingCycle && <p role="alert" className="text-xs text-red-600">{fieldErrors.billingCycle}</p>}
               </div>
 
               <div className="space-y-1.5">
@@ -358,7 +389,7 @@ function PanelInner({ subscription, plans, onClose, onUpdated }: PanelProps) {
                   Adds to the current expiry ({formatDay(`${extendBase}T12:00:00Z`)})
                   {base.expiresOn && isoToIstDate(base.expiresOn) < todayIst() ? " — already lapsed, counting from today" : ""}.
                 </p>
-                {fieldErrors.periodEnd && <p className="text-xs text-red-600">{fieldErrors.periodEnd}</p>}
+                {fieldErrors.periodEnd && <p role="alert" className="text-xs text-red-600">{fieldErrors.periodEnd}</p>}
               </div>
 
               <div className="space-y-1.5">
@@ -376,7 +407,7 @@ function PanelInner({ subscription, plans, onClose, onUpdated }: PanelProps) {
                 {status === "active" && (
                   <p className="text-xs text-muted-foreground">Active needs an expiry date in the future.</p>
                 )}
-                {fieldErrors.status && <p className="text-xs text-red-600">{fieldErrors.status}</p>}
+                {fieldErrors.status && <p role="alert" className="text-xs text-red-600">{fieldErrors.status}</p>}
               </div>
 
               <div className="space-y-1.5">
@@ -392,7 +423,7 @@ function PanelInner({ subscription, plans, onClose, onUpdated }: PanelProps) {
                   className={fieldClass + " tabular-nums"}
                 />
                 <p className="text-xs text-muted-foreground">0 marks a complimentary subscription.</p>
-                {fieldErrors.amount && <p className="text-xs text-red-600">{fieldErrors.amount}</p>}
+                {fieldErrors.amount && <p role="alert" className="text-xs text-red-600">{fieldErrors.amount}</p>}
               </div>
 
               <div className="space-y-1.5">
@@ -408,7 +439,7 @@ function PanelInner({ subscription, plans, onClose, onUpdated }: PanelProps) {
                   placeholder="Why is this change being made? Stored in the audit log."
                   className="w-full rounded-md border border-input bg-transparent px-2.5 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 />
-                {fieldErrors.reason && <p className="text-xs text-red-600">{fieldErrors.reason}</p>}
+                {fieldErrors.reason && <p role="alert" className="text-xs text-red-600">{fieldErrors.reason}</p>}
               </div>
 
               {formError && (
