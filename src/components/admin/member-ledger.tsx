@@ -2,9 +2,8 @@
 
 import { Fragment, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, ChevronRight, ExternalLink, LogIn, Loader2, Search, UserPlus, Users } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Search, UserPlus, Users } from "lucide-react";
 import type { MemberDetail, MemberPage } from "@/lib/admin/metrics";
-import { createClient } from "@/lib/supabase/client";
 import {
   ADMIN_ROOT,
   ADMIN_TIMEZONE,
@@ -613,8 +612,8 @@ function RowDetail({
         <Stat label="Team members">{detail.teamMembers.toLocaleString("en-IN")}</Stat>
       </dl>
 
-      {/* Quick actions: subscription deep-link + Login-as-user (spec
-          Part 2) — the only place impersonation can be started. */}
+      {/* Quick actions: the subscription deep-link, plus a details retry
+          when the last fetch failed. */}
       <div className="flex flex-wrap items-center gap-3">
         {detail.latestSubscriptionId ? (
           <a
@@ -627,7 +626,6 @@ function RowDetail({
         ) : (
           <span className="text-sm text-muted-foreground">No subscription yet</span>
         )}
-        <ImpersonateAction userId={userId} />
         {error && (
           <Button size="sm" variant="ghost" onClick={() => onRetry(userId)} className="h-7 px-2 text-xs">
             Refresh details
@@ -635,72 +633,6 @@ function RowDetail({
         )}
       </div>
     </div>
-  );
-}
-
-/**
- * Login-as-user (spec Part 2). Asks the admin API to mint a REAL
- * customer session (service-role magicless link — lib/admin/
- * impersonation), plants it with setSession in THIS browser, then
- * hard-navigates to the customer app so the middleware, the server
- * layout, and the AuthProvider all bootstrap exactly like a normal
- * login. The admin marker cookie is not touched, and the banner's
- * Exit returns here with only the sb-* cookies cleared. The button
- * acts without a confirmation step — impersonation is a banner-shouts
- * affair anyway — but the mint itself is CSRF-checked and rate-limited
- * server-side.
- */
-function ImpersonateAction({ userId }: { userId: string }) {
-  const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
-
-  async function start() {
-    if (busy) return;
-    setBusy(true);
-    setFailed(false);
-    try {
-      const res = await fetch(`/api${ADMIN_ROOT}/impersonate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-        body: JSON.stringify({ userId }),
-      });
-      const json = (await res.json().catch(() => null)) as {
-        ok?: boolean;
-        session?: { access_token: string; refresh_token: string };
-      } | null;
-      if (!res.ok || !json?.ok || !json.session) throw new Error("mint failed");
-
-      const { error } = await createClient().auth.setSession(json.session);
-      if (error) throw new Error("setSession failed");
-
-      // Full page navigation: crosses the admin→customer boundary with
-      // zero carried-over client state — deliberately NOT router.push(),
-      // which would keep this admin bundle (and its auth caches) alive.
-      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      window.location.href = "/";
-    } catch {
-      setBusy(false);
-      setFailed(true);
-    }
-  }
-
-  return (
-    <span className="flex items-center gap-2">
-      <Button size="sm" variant="outline" onClick={() => void start()} disabled={busy}>
-        {busy ? (
-          <Loader2 className="h-4 w-4 animate-spin" aria-hidden={true} />
-        ) : (
-          <LogIn className="h-4 w-4" aria-hidden={true} />
-        )}
-        {busy ? "Opening session…" : "Log in as user"}
-      </Button>
-      {failed && (
-        <span role="alert" className="text-xs text-red-600 dark:text-red-400">
-          Couldn&rsquo;t start the session. Try again.
-        </span>
-      )}
-    </span>
   );
 }
 

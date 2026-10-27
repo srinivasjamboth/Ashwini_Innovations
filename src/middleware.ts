@@ -3,9 +3,6 @@ import { NextResponse, type NextRequest } from 'next/server'
 import {
   ADMIN_LOGIN_PATH,
   ADMIN_SESSION_COOKIE,
-  IMPERSONATION_BLOCKED_APIS,
-  IMPERSONATION_BLOCKED_PAGES,
-  IMPERSONATION_BLOCKED_REDIRECT,
 } from '@/lib/admin/constants'
 
 export async function middleware(request: NextRequest) {
@@ -107,38 +104,13 @@ export async function middleware(request: NextRequest) {
     return res
   }
 
-  // Login-as-user: an admin marker cookie riding along WITH a live
-  // customer session means this browser is the Super Admin viewing a
-  // customer account. Credential-changing and money-touching surfaces
-  // (password/email change, API keys, checkout/renew — see the lists in
-  // lib/admin/constants) are denied for the whole view; everything else
-  // behaves normally so the admin sees what the customer sees.
-  //
-  // The check is marker PRESENCE, not validity: middleware cannot reach
-  // the Node-only marker store, and validity is irrelevant to safety
-  // here — only a session minted through requireOwnerApi() can produce
-  // this cookie pair, and a customer who forges a junk marker cookie at
-  // themselves loses access to their own settings, nothing more. Page
-  // denials redirect (a human lands somewhere usable); API denials
-  // answer a plain 403 the customer UI shows as its generic error.
-  if (user && request.cookies.has(ADMIN_SESSION_COOKIE)) {
-    const pathname = request.nextUrl.pathname
-    if (IMPERSONATION_BLOCKED_PAGES.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
-      const url = request.nextUrl.clone()
-      const [path, query] = IMPERSONATION_BLOCKED_REDIRECT.split('?')
-      url.pathname = path
-      url.search = query ? `?${query}` : ''
-      return withRefreshedCookies(NextResponse.redirect(url))
-    }
-    if (IMPERSONATION_BLOCKED_APIS.some((p) => pathname.startsWith(p))) {
-      return withRefreshedCookies(
-        NextResponse.json(
-          { error: 'impersonation_blocked' },
-          { status: 403, headers: { 'Cache-Control': 'no-store' } },
-        ),
-      )
-    }
-  }
+  // Impersonation (Login-as-user) has been removed, so there is
+  // deliberately nothing here that reacts to an admin marker cookie on a
+  // customer route. A stray ashwini_admin_sid in someone's browser grants
+  // no access and blocks nothing: the marker is only ever read by the
+  // admin gate above (a presence check that bounces logged-out visitors
+  // to the admin login) and by requireOwner()/the Postgres marker store,
+  // which is the actual authority.
 
   // Auth pages - redirect to dashboard if already logged in.
   // Exception: when an invite token is in the query string we

@@ -139,51 +139,51 @@ describe("middleware — every dashboard route requires a session", () => {
   });
 });
 
-describe("middleware — impersonated sessions are denied sensitive surfaces", () => {
-  // The impersonation fingerprint is an admin marker cookie presented
-  // TOGETHER with a live customer session. Page hits redirect off the
-  // blocked surface; API hits get a 403 JSON. Carrying the rotated
-  // cookies through both answers is mandatory (issue #288 again).
+describe("middleware — a stray admin marker cookie grants nothing and blocks nothing", () => {
+  // Impersonation (Login-as-user) has been removed, so nothing in the
+  // customer app reacts to ashwini_admin_sid any more. These are
+  // regression guards for both halves of that: the cookie must never
+  // lock a real customer out of their own settings, password reset, API
+  // keys or checkout (the old deny-list did, on mere presence), and it
+  // must never substitute for a session.
   const marker = { headers: { cookie: "ashwini_admin_sid=m-1" } };
 
-  it("redirects an impersonated /settings visit to /dashboard", async () => {
+  it("lets a signed-in customer holding a marker cookie open /settings", async () => {
     mockUser = { id: "cust-1" };
     refreshedCookies = [ROTATED];
 
     const res = await middleware(new NextRequest("https://app.test/settings", marker));
 
-    expect(res.status).toBe(307);
-    const loc = new URL(res.headers.get("location")!);
-    expect(loc.pathname).toBe("/dashboard");
-    expect(loc.searchParams.get("impersonation")).toBe("blocked");
-    expect(res.cookies.get(ROTATED.name)?.value).toBe(ROTATED.value);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
   });
 
-  it("403s impersonated API-key and checkout calls", async () => {
+  it("lets that customer reach the password-reset page too", async () => {
+    mockUser = { id: "cust-1" };
+
+    const res = await middleware(
+      new NextRequest("https://app.test/reset-password", marker),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("does not 403 API-key or checkout calls for that customer", async () => {
     mockUser = { id: "cust-1" };
 
     for (const path of ["/api/account/api-keys", "/api/billing/checkout"]) {
       const res = await middleware(new NextRequest(`https://app.test${path}`, marker));
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(200);
     }
   });
 
-  it("leaves a normal signed-in customer untouched", async () => {
-    mockUser = { id: "cust-1" };
+  it("still requires a real session on /settings whatever the browser carries", async () => {
+    mockUser = null;
 
-    const res = await middleware(new NextRequest("https://app.test/settings"));
+    const res = await middleware(new NextRequest("https://app.test/settings", marker));
 
-    expect(res.headers.get("location")).toBeNull();
-    expect(res.status).toBe(200);
-  });
-
-  it("does not block an impersonated read-only billing snapshot fetch", async () => {
-    mockUser = { id: "cust-1" };
-
-    const res = await middleware(
-      new NextRequest("https://app.test/api/billing/entitlements", marker),
-    );
-
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(307);
+    expect(new URL(res.headers.get("location")!).pathname).toBe("/login");
   });
 });

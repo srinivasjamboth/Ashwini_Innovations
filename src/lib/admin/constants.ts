@@ -106,35 +106,6 @@ export const ADMIN_SESSION_ABSOLUTE_MS = 8 * 60 * 60 * 1000;
 export const ADMIN_SESSION_COOKIE_MAXAGE_S = ADMIN_SESSION_ABSOLUTE_MS / 1000;
 
 // ------------------------------------------------------------
-// Impersonation (Login-as-user)
-// ------------------------------------------------------------
-
-/**
- * Page prefixes an impersonated admin session cannot open in the
- * customer app. Everything destructive or credential-changing lives
- * here: the settings area (password form, email change, API-key
- * management, billing tab) and the authenticated password-reset page.
- * Blocked in middleware on a marker-cookie check — see
- * src/middleware.ts for why presence-only is the right edge primitive.
- */
-export const IMPERSONATION_BLOCKED_PAGES = ['/settings', '/reset-password'] as const;
-
-/**
- * API prefixes blocked while impersonating. Covers the actions the
- * page block protects: API-key create/list/reveal/delete and the
- * payment checkout (subscribe / upgrade / renew). Read-only billing
- * (entitlements snapshot, payments history) stays open — the app
- * needs the snapshot to render, and reading is not a mutation.
- */
-export const IMPERSONATION_BLOCKED_APIS = [
-  '/api/account/api-keys',
-  '/api/billing/checkout',
-] as const;
-
-/** Where the middleware sends an impersonated page visit that hit the block. */
-export const IMPERSONATION_BLOCKED_REDIRECT = '/dashboard?impersonation=blocked';
-
-// ------------------------------------------------------------
 // Login throttling
 // ------------------------------------------------------------
 
