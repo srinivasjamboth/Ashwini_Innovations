@@ -23,7 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { LIMIT_FEATURES, UNLIMITED, type LimitFeature } from "@/lib/plans/config";
-import { formatCurrency } from "@/lib/currency";
+import { formatCount, formatCurrency } from "@/lib/currency";
 
 interface PaymentRow {
   id: string;
@@ -124,12 +124,22 @@ export function BillingPanel() {
               const used = snapshot.usage[feature] ?? 0;
               const unlimited = limit === UNLIMITED;
               const atCap = !unlimited && used >= limit;
+              // The window is the figure's OWN stored period, so a yearly
+              // plan reads "4,200 / 60,000 this year" and a monthly plan
+              // keeps "… this month" — same component, no special-casing of
+              // numbers (they arrive yearly from the entitlement service).
+              const period = snapshot.limitPeriods[feature];
+              const window =
+                period === "yearly" ? t("windowYearly") : period === "monthly" ? t("windowMonthly") : null;
               return (
                 <li key={feature} className="text-sm">
                   <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{tp(`limits.${feature}`)}</span>
+                    <span className="text-muted-foreground">
+                      {tp(`limits.${feature}`)}
+                      {window ? <span className="ms-1 text-xs">· {window}</span> : null}
+                    </span>
                     <span className={atCap ? "font-medium text-amber-600" : "font-medium"}>
-                      {used.toLocaleString()} / {unlimited ? tp("unlimited") : limit.toLocaleString()}
+                      {formatCount(used)} / {unlimited ? tp("unlimited") : formatCount(limit)}
                     </span>
                   </div>
                   <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
@@ -174,7 +184,12 @@ export function BillingPanel() {
                   {payments.map((p) => (
                     <tr key={p.id} className="border-b last:border-0">
                       <td className="py-2 pr-4 text-muted-foreground">{fmtDate(p.created_at)}</td>
-                      <td className="py-2 pr-4">{p.plan_id}</td>
+                      <td className="py-2 pr-4">
+                        {p.plan_id}
+                        {p.billing_cycle === "yearly" ? (
+                          <span className="ms-1 text-xs text-muted-foreground">· {tp("yearly")}</span>
+                        ) : null}
+                      </td>
                       <td className="py-2 pr-4">
                         {p.amount != null ? formatCurrency(p.amount, p.currency ?? "INR") : "—"}
                       </td>

@@ -45,6 +45,9 @@ export default function NewBroadcastPage() {
   >({});
   const [headerMediaUrl, setHeaderMediaUrl] = useState('');
   const [name, setName] = useState('');
+  // Per-recipient pacing chosen on the send step (ms). 0 = unpaced
+  // (original batch-of-10 behaviour).
+  const [sendDelayMs, setSendDelayMs] = useState(0);
 
   async function handleSend() {
     if (!template) return;
@@ -62,6 +65,7 @@ export default function NewBroadcastPage() {
         },
         variables,
         headerMediaUrl,
+        sendDelayMs,
       });
       router.push(`/broadcasts/${broadcastId}`);
     } catch (err) {
@@ -90,6 +94,7 @@ export default function NewBroadcastPage() {
           },
           variables,
           headerMediaUrl,
+          sendDelayMs,
         },
         scheduledAtIso,
         timezone,
@@ -260,6 +265,8 @@ export default function NewBroadcastPage() {
             <Step4ScheduleSend
               name={name}
               onNameChange={setName}
+              sendDelayMs={sendDelayMs}
+              onDelayChange={setSendDelayMs}
               template={template}
               audience={audience}
               onSend={handleSend}

@@ -106,6 +106,19 @@ BEGIN
       'idx_broadcasts_scheduled_due is missing — migration 046 did not apply';
   END IF;
 
+  -- messages.template_payload (053) is written on every template send.
+  -- The ADD COLUMN is IF NOT EXISTS, so a typo'd name applies cleanly and
+  -- then every template send fails at the INSERT — after Meta already
+  -- delivered, which is the worst possible place for a schema mistake.
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'messages'
+      AND column_name = 'template_payload'
+  ) THEN
+    RAISE EXCEPTION
+      'messages.template_payload is missing — migration 053 did not apply';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;

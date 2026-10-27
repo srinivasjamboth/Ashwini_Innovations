@@ -13,9 +13,9 @@
  */
 
 import { supabaseAdmin } from './admin-client';
-import { invalidateEntitlements } from './entitlements';
+import { invalidateEntitlements, computeEffectiveStatus } from './entitlements';
 import { advancePeriod } from './period';
-import type { BillingCycle, PlanKey, SubscriptionRow } from './types';
+import type { BillingCycle, EffectiveStatus, PlanKey, SubscriptionRow } from './types';
 
 export interface ActivateArgs {
   accountId: string;
@@ -48,11 +48,55 @@ async function loadSubscription(
   const { data } = await supabaseAdmin()
     .from('subscriptions')
     .select(
-      'account_id,user_id,plan_id,status,billing_cycle,current_period_start,current_period_end,trial_end,trial_claimed_at',
+      'account_id,user_id,plan_id,status,billing_cycle,current_period_start,current_period_end,trial_end,trial_claimed_at,gateway_subscription_id',
     )
     .eq('account_id', accountId)
     .maybeSingle();
   return (data as SubscriptionRow | null) ?? null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Offering changes (spec PART 4).
+ *
+ * An upgrade, or monthly -> yearly, may be bought immediately. A paid
+ * YEARLY period may not be downgraded — to a cheaper plan or back to
+ * monthly — until it expires, because there is no proration and a
+ * customer must never be able to trade away a year they already paid
+ * for. Pure function so it is unit-testable and usable from both the
+ * checkout route (before charging) and the gateway webhook (authority).
+ * ------------------------------------------------------------------ */
+export interface OfferingChangeVerdict {
+  allowed: boolean;
+  /** Set when a paid yearly period blocks the change: its period end. */
+  blockedUntil?: string | null;
+}
+
+export function evaluateOfferingChange(input: {
+  /** The account's CURRENT subscription row, or null (never subscribed). */
+  current: Pick<SubscriptionRow, 'plan_id' | 'billing_cycle' | 'status' | 'current_period_end' | 'trial_end'> | null;
+  /** Effective status at request time (expired periods never block). */
+  effectiveStatus: EffectiveStatus;
+  /** plans.sort — lower is cheaper. */
+  currentSort: number;
+  targetSort: number;
+  targetCycle: BillingCycle;
+}): OfferingChangeVerdict {
+  const { current, effectiveStatus, currentSort, targetSort, targetCycle } = input;
+  // Nothing to protect yet (no subscription, trial, or already expired).
+  if (!current) return { allowed: true, blockedUntil: null };
+  if (effectiveStatus === 'expired') return { allowed: true, blockedUntil: null };
+  if (current.billing_cycle !== 'yearly') return { allowed: true, blockedUntil: null };
+  if (current.plan_id === 'trial') return { allowed: true, blockedUntil: null };
+
+  const isDowngrade = targetSort < currentSort;
+  const toMonthly = targetCycle !== 'yearly';
+  if (isDowngrade || toMonthly) {
+    return {
+      allowed: false,
+      blockedUntil: current.current_period_end ?? current.trial_end ?? null,
+    };
+  }
+  return { allowed: true, blockedUntil: null };
 }
 
 async function ownerIdFor(accountId: string): Promise<string | null> {
@@ -194,6 +238,123 @@ export async function activateSubscription(args: ActivateArgs): Promise<Activate
 
   invalidateEntitlements(accountId);
   return { subscription, applied: true };
+}
+
+/* ------------------------------------------------------------------ *
+ * Route-facing guard: may this account buy `targetPlanId` / `targetCycle`
+ * right now, given what it is already paying for?
+ * ------------------------------------------------------------------ */
+export async function evaluatePurchaseChange(
+  accountId: string,
+  targetPlanId: PlanKey,
+  targetCycle: BillingCycle,
+  now: Date = new Date(),
+): Promise<OfferingChangeVerdict & { from?: PlanKey; fromCycle?: BillingCycle }> {
+  const admin = supabaseAdmin();
+  const prev = await loadSubscription(accountId);
+  if (!prev) return { allowed: true, blockedUntil: null };
+
+  const { data: planRows } = await admin.from('plans').select('id,sort');
+  const sortOf = (id: string | null | undefined): number =>
+    ((planRows ?? []) as { id: string; sort: number }[]).find((p) => p.id === id)?.sort ?? 0;
+
+  const verdict = evaluateOfferingChange({
+    current: prev,
+    effectiveStatus: computeEffectiveStatus(prev, now),
+    currentSort: sortOf(prev.plan_id),
+    targetSort: sortOf(targetPlanId),
+    targetCycle,
+  });
+  return { ...verdict, from: prev.plan_id, fromCycle: prev.billing_cycle };
+}
+
+/* ------------------------------------------------------------------ *
+ * Double-billing guard (spec PART 4).
+ *
+ * A new gateway subscription starts the moment its first payment is
+ * verified, so the customer's PREVIOUS one must be cancelled — otherwise
+ * Razorpay keeps charging the old plan on its own schedule and they pay
+ * for two plans at once. Called from the webhook after activate().
+ *
+ * Idempotent by construction:
+ *   - no previous id, or the same id as the new subscription -> skipped
+ *     (a renewal of the same offering must never cancel itself),
+ *   - the gateway's "already cancelled / not able to cancel" responses are
+ *     treated as success, so a replayed webhook is a no-op,
+ *   - the stored column is cleared only after a confirmed cancellation,
+ *     and a gateway failure NEVER blocks the activation the customer paid
+ *     for — it is logged for the operator instead.
+ * `cancel` is injected so this is unit-testable without a network.
+ *
+ * IMPORTANT: `previousGatewaySubscriptionId` must be captured BEFORE the
+ * new payment is applied (activate overwrites the column), which is why the
+ * caller passes it in instead of us reading it back afterwards.
+ * ------------------------------------------------------------------ */
+export async function loadGatewaySubscriptionId(accountId: string): Promise<string | null> {
+  const prev = await loadSubscription(accountId);
+  return prev?.gateway_subscription_id ?? null;
+}
+
+export async function settlePreviousGatewaySubscription(args: {
+  accountId: string;
+  /** The id the customer held BEFORE this activation (captured first). */
+  previousGatewaySubscriptionId?: string | null;
+  /** The subscription id the customer now holds. */
+  keepGatewaySubscriptionId: string | null | undefined;
+  cancel: (gatewaySubscriptionId: string) => Promise<{ cancelled: boolean; alreadyInactive?: boolean; error?: string }>;
+}): Promise<{ attempted: boolean; cancelled: boolean; skippedReason?: string; error?: string }> {
+  const { accountId, keepGatewaySubscriptionId, cancel } = args;
+  const admin = supabaseAdmin();
+  const previous =
+    args.previousGatewaySubscriptionId !== undefined
+      ? args.previousGatewaySubscriptionId
+      : await loadGatewaySubscriptionId(accountId);
+
+  if (!previous) return { attempted: false, cancelled: false, skippedReason: 'no_previous' };
+  if (keepGatewaySubscriptionId && previous === keepGatewaySubscriptionId) {
+    return { attempted: false, cancelled: false, skippedReason: 'same_subscription' };
+  }
+
+  const result = await cancel(previous);
+  if (result.cancelled || result.alreadyInactive) {
+    // Only drop the reference once the gateway says it is stopped; if the
+    // call failed we keep it so an operator (or a retry) can still see what
+    // needs cancelling.
+    const { error: clearErr } = await admin
+      .from('subscriptions')
+      .update({ gateway_subscription_id: null, updated_at: new Date().toISOString() })
+      .eq('account_id', accountId)
+      .eq('gateway_subscription_id', previous);
+    if (clearErr) console.error('[plans] could not clear cancelled gateway subscription id:', clearErr.message);
+    return { attempted: true, cancelled: true };
+  }
+
+  console.error(
+    `[plans] DOUBLE-BILLING RISK: account ${accountId} still has gateway subscription ${previous} active (new one: ${keepGatewaySubscriptionId ?? 'none'}): ${result.error ?? 'cancel failed'}. Operator must cancel it manually.`,
+  );
+  return { attempted: true, cancelled: false, error: result.error };
+}
+
+/* ------------------------------------------------------------------ *
+ * Resolve what a gateway plan id stands for.
+ *
+ * The webhook normally gets {account_id, plan_id, billing_cycle} in the
+ * subscription NOTES we wrote at checkout. Notes are gateway-side data and
+ * can be edited or dropped, so a `plan_prices.gateway_plan_id` lookup is
+ * used to confirm/replace the plan + cycle — the DB stays the authority on
+ * what is being sold, the gateway only says who paid.
+ * ------------------------------------------------------------------ */
+export async function resolveOfferingByGatewayPlan(
+  gatewayPlanId: string | null | undefined,
+): Promise<{ planId: PlanKey; cycle: BillingCycle } | null> {
+  if (!gatewayPlanId) return null;
+  const { data } = await supabaseAdmin()
+    .from('plan_prices')
+    .select('plan_id,billing_cycle')
+    .eq('gateway_plan_id', gatewayPlanId)
+    .maybeSingle();
+  const row = data as { plan_id: PlanKey; billing_cycle: BillingCycle } | null;
+  return row ? { planId: row.plan_id, cycle: row.billing_cycle } : null;
 }
 
 /** Cancel at period end (stored status flips to canceled; effective status

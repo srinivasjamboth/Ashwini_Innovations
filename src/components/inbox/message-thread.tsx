@@ -55,6 +55,10 @@ import { TemplatePicker } from "./template-picker";
 import { AiThreadBanner } from "./ai-thread-banner";
 import { buildReplyPreview } from "./reply-quote";
 import { renderTemplateBody } from "@/lib/whatsapp/template-body";
+import {
+  buildTemplatePayload,
+  type TemplateIndex,
+} from "@/lib/whatsapp/template-render";
 import { contactHandle } from "@/lib/whatsapp/wa-identity";
 import { toast } from "sonner";
 
@@ -687,6 +691,18 @@ export function MessageThread({
         content_type: "template",
         content_text: renderedBody,
         template_name: template.name,
+        // The same snapshot the server is about to persist, so the
+        // bubble shows the full delivery (header, footer, buttons) from
+        // the moment it appears instead of only after a refetch.
+        template_payload: buildTemplatePayload({
+          template,
+          name: template.name,
+          language: template.language,
+          bodyParams: values.body,
+          headerText: values.headerText,
+          buttonParams: values.buttonParams,
+          renderedBody,
+        }),
         status: "sending",
         created_at: new Date().toISOString(),
       };
@@ -743,6 +759,62 @@ export function MessageThread({
     for (const m of messages) map.set(m.id, m);
     return map;
   }, [messages]);
+
+  // Legacy template bubbles: rows written before migration 053 carry no
+  // `template_payload`, so the only way to show their header / footer /
+  // buttons is to reconstruct them from the live template. Fetch just the
+  // names this thread references. Best-effort by design — an error (or a
+  // deleted template) leaves the map without that name and the bubble
+  // renders the plain text it always did.
+  const [templateRows, setTemplateRows] = useState<TemplateIndex>(new Map());
+
+  const legacyTemplateKey = useMemo(() => {
+    const names = new Set<string>();
+    for (const m of messages) {
+      if (m.content_type !== "template") continue;
+      // A stored snapshot needs no reconstruction.
+      if (m.template_payload) continue;
+      if (m.template_name) names.add(m.template_name);
+    }
+    return [...names].sort().join("|");
+  }, [messages]);
+
+  useEffect(() => {
+    if (!legacyTemplateKey) return;
+    let cancelled = false;
+    const supabase = createClient();
+
+    (async () => {
+      const { data, error } = await supabase
+        .from("message_templates")
+        .select("*")
+        .in("name", legacyTemplateKey.split("|"))
+        .order("created_at", { ascending: false });
+
+      if (cancelled) return;
+      if (error) {
+        console.error("Failed to fetch templates for sent messages:", error);
+        return;
+      }
+      setTemplateRows((prev) => {
+        const next = new Map(prev);
+        for (const row of (data as MessageTemplate[]) ?? []) {
+          if (!row?.name) continue;
+          // Newest first, and never overwrite: an account can hold two
+          // templates with the same name in two languages, and the row
+          // already in the map is the one we resolved for this thread.
+          if (next.has(row.name)) continue;
+          next.set(row.name, row);
+          next.set(row.name.toLowerCase(), row);
+        }
+        return next;
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [legacyTemplateKey]);
 
   // Images + videos in the thread, in order — the set the media viewer
   // pages through with ← / →.
@@ -1162,6 +1234,7 @@ export function MessageThread({
                           currentUserId={user?.id}
                           onToggleReaction={handlePillToggle}
                           onOpenMedia={handleMediaChange}
+                          templates={templateRows}
                         />
                       </MessageActions>
                     );

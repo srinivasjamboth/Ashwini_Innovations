@@ -278,7 +278,11 @@
       "downloadFailed": "Couldn't download the attachment",
       "viewImage": "View image",
       "expandVideo": "Expand video",
-      "imageAlt": "Shared image"
+      "imageAlt": "Shared image",
+      "codeCopied": "Code copied",
+      "copyCodeFailed": "Couldn't copy the code",
+      "quickReplyHint": "The customer taps this to reply",
+      "flowHint": "Opens a form in WhatsApp"
     },
     "mediaViewer": {
       "counter": "{index} of {total}",
@@ -909,6 +913,8 @@
         "invalidError": "Enter a valid date and time.",
         "scheduleButton": "Schedule Broadcast",
         "scheduleConfirmTitle": "Confirm Scheduled Broadcast",
+        "delayLabel": "Delay between messages",
+        "delayHint": "Wait this long between each recipient so a broadcast stays under the WhatsApp sending rate. Use a higher value for large sends.",
         "scheduleConfirmDesc": "This broadcast will be sent to <b>{count, number}</b> {count, plural, =1 {contact} other {contacts}} on <b>{when}</b>. You can reschedule or cancel it any time before it runs."
       }
     }
@@ -2268,6 +2274,12 @@
     "gatewayPending": "Online payment isn't set up yet. Checkout opens as soon as it's enabled.",
     "checkoutError": "We couldn't start checkout. Please try again.",
     "catalogError": "We couldn't load the plans. Please try again.",
+    "switchToYearly": "Switch to yearly",
+    "switchToMonthly": "Switch to monthly",
+    "yearlyUnavailable": "Yearly billing is not available for this plan yet",
+    "yearlyLocked": "Your yearly plan runs until {date}.",
+    "paymentProcessing": "Payment authorized - activating your plan now.",
+    "checkoutCancelled": "Checkout was cancelled. Nothing was charged.",
     "limits": {
       "contacts": "Contacts",
       "bulk_messages": "Bulk messages",
@@ -2308,7 +2320,9 @@
     "date": "Date",
     "plan": "Plan",
     "amount": "Amount",
-    "status": "Status"
+    "status": "Status",
+    "windowMonthly": "this month",
+    "windowYearly": "this year"
   },
   "DashboardShell": {
     "loading": "Loading..."

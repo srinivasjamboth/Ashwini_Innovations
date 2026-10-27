@@ -24,8 +24,18 @@ export type SubscriptionStatus =
  *  what enforcement and the UI actually branch on — see Part 3. */
 export type EffectiveStatus = 'trialing' | 'active' | 'expired';
 
-/** A limit period: a stored-count cap, or a monthly reset window. */
-export type LimitPeriod = 'total' | 'monthly';
+/**
+ * A limit period: a stored-count cap ('total'), a calendar-month reset
+ * ('monthly'), or one pool spanning the whole subscription period
+ * ('yearly' — only ever produced by a stored yearly limits row, see
+ * migration 052).
+ */
+export type LimitPeriod = 'total' | 'monthly' | 'yearly';
+
+/** Which window a `usage_counters` row belongs to. Mirrors the
+ *  `quota_window` column so a monthly pool and a yearly pool can share one
+ *  table and one reader without colliding on the same start date. */
+export type QuotaWindow = 'lifetime' | 'monthly' | 'yearly';
 
 /** The subscription row shape we read from PostgREST. */
 export interface SubscriptionRow {
@@ -38,6 +48,9 @@ export interface SubscriptionRow {
   current_period_end: string | null;
   trial_end: string | null;
   trial_claimed_at: string | null;
+  /** Gateway subscription behind the current offering. Optional because the
+   *  lifecycle reads that list their own column set. */
+  gateway_subscription_id?: string | null;
 }
 
 /** The whole answer to "what may this account do right now". */
@@ -53,9 +66,11 @@ export interface Entitlements {
   periodStart: string | null;
   periodEnd: string | null;
   trialClaimedAt: string | null;
-  /** feature -> numeric cap, -1 = unlimited. Missing feature -> unlimited. */
+  /** feature -> numeric cap, -1 = unlimited. Missing feature -> unlimited.
+   *  On a yearly subscription these are the STORED yearly figures (falling
+   *  back to the monthly row where a figure has no yearly row). */
   limits: Partial<Record<LimitFeature, number>>;
-  /** feature -> 'total' | 'monthly'. */
+  /** feature -> 'total' | 'monthly' | 'yearly'. */
   limitPeriods: Partial<Record<LimitFeature, LimitPeriod>>;
   /** flag -> enabled. */
   features: Partial<Record<FeatureFlag, boolean>>;

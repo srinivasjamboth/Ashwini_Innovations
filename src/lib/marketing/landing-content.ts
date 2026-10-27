@@ -194,12 +194,13 @@ export const LANDING_FEATURES: LandingFeature[] = [
 /* ------------------------------------------------------------
    Pricing (the template's Pricing section)
 
-   The four tiers the operator specified (7-Day Free Trial, Starter,
-   Growth, Enterprise) with their monthly rupee prices. The yearly
-   figure is derived, not entered by hand: it is 12 × the monthly price
-   (twelve months at the same rate). Presentation only — there is no
-   billing backend behind these numbers yet; the CTAs just point at
-   /signup.
+   The strings below are the FIRST-PAINT / no-fetch fallback only: the
+   component renders the cards FROM THE DATABASE (`/api/billing/plans`, the
+   same rows the enforcement engine reads) and falls back to these when the
+   catalog is still loading or the fetch failed. `includes` is the monthly
+   view, `yearlyIncludes` the stored yearly figures (052's seed = 12 x
+   monthly). Never the source of truth — change a number in the DB and the
+   cards change.
    ------------------------------------------------------------ */
 
 export interface LandingPlan {
@@ -208,18 +209,32 @@ export interface LandingPlan {
   /** Per-month price, thousands-separated, without the currency symbol. */
   monthly: string;
   /**
-   * Per-year price. Computed as 12 × `monthly` — see the note above.
-   * Kept as a display string so the thousands separator stays where the
-   * design wants it.
+   * Per-year price. Kept as a display string so the thousands separator
+   * stays where the design wants it.
    */
   yearly: string;
   includes: string[];
+  /** Bullet list for the Yearly view. Absent = the card has no yearly
+   *  version (the free trial) or yearly billing is not available for it. */
+  yearlyIncludes?: string[];
+  /** True when this plan has STORED yearly figures to show (the display gate,
+   *  `PlanCard.yearlyShown`). It is NOT purchasability: that is
+   *  `yearlyAvailable` below, which additionally needs a yearly price and a
+   *  yearly gateway plan id. */
+  yearlyShown?: boolean;
+  /** False when this plan cannot be CHECKED OUT yearly yet (no yearly price row
+   *  or no yearly gateway plan id). The card then carries the
+   *  "not available yet" note instead of offering a broken checkout. */
+  yearlyAvailable?: boolean;
   /** Which gradient the CTA button uses. */
   tone: "primary" | "secondary";
   /** Renders the "Most Popular" badge and an emphasised border. */
   popular?: boolean;
   /** CTA label; falls back to "Start free trial" when unset. */
   cta?: string;
+  /** The free trial: 7 days, one shared allowance, and NO yearly version,
+   *  so its card must not change when the toggle moves. */
+  trial?: boolean;
 }
 
 /** Currency symbol shown as the price superscript. */
@@ -230,7 +245,8 @@ export const LANDING_PRICING_HEADLINE = {
   headline: "Choose Your Plan",
 } as const;
 
-/** The four tiers, priced monthly; `yearly` is 12 × `monthly`. */
+/** The four tiers; `includes` is the monthly view, `yearlyIncludes` the
+ *  yearly view. The trial has no yearly version, so it has none. */
 export const LANDING_PLANS: LandingPlan[] = [
   {
     name: "7-Day Free Trial",
@@ -239,9 +255,13 @@ export const LANDING_PLANS: LandingPlan[] = [
     yearly: "0",
     tone: "primary",
     cta: "Start free trial",
+    // The trial is 7 days and its 100 bulk messages are for the WHOLE trial,
+    // so no "/month" here — the figure and the price suffix both read as the
+    // trial allowance (spec PART 1: fix the trial labels).
+    trial: true,
     includes: [
       "100 Contacts",
-      "100 Bulk Broadcast Messages",
+      "100 Bulk Broadcast Messages (whole trial)",
       "3 Templates",
       "5 Quick Replies",
       "1 Automation Flow",
@@ -272,6 +292,20 @@ export const LANDING_PLANS: LandingPlan[] = [
       "2 Team Members",
       "Customer Support",
     ],
+    yearlyIncludes: [
+      "WhatsApp AI Agent",
+      "Send up to 60,000 bulk broadcast messages/year",
+      "WhatsApp Bulk Broadcast",
+      "Template Message API (120 templates)",
+      "12,000 Contacts",
+      "240 Quick Replies",
+      "36 WhatsApp Automation Flows",
+      "36 WhatsApp Forms",
+      "Fields & Tags",
+      "Opt In / Opt Out — Included",
+      "24 Team Members",
+      "Customer Support",
+    ],
   },
   {
     name: "Growth",
@@ -295,6 +329,20 @@ export const LANDING_PLANS: LandingPlan[] = [
       "10 Team Members",
       "Customer Support",
     ],
+    yearlyIncludes: [
+      "WhatsApp AI Agent",
+      "All Starter Features +",
+      "Send up to 300,000 bulk broadcast messages/year",
+      "Broadcast Scheduler",
+      "Unlimited Templates",
+      "Unlimited Quick Replies",
+      "Unlimited WhatsApp Automation Flows",
+      "Unlimited WhatsApp Forms",
+      "Fields & Tags",
+      "Opt In / Opt Out — Included",
+      "120 Team Members",
+      "Customer Support",
+    ],
   },
   {
     name: "Enterprise",
@@ -307,6 +355,22 @@ export const LANDING_PLANS: LandingPlan[] = [
       "WhatsApp AI Agent",
       "All Growth Features +",
       "Send unlimited bulk broadcast messages/month (fair-use policy)",
+      "Unlimited Contacts",
+      "Unlimited Templates",
+      "Unlimited Quick Replies",
+      "Unlimited WhatsApp Automation Flows",
+      "Unlimited WhatsApp Forms",
+      "Fields & Tags",
+      "Opt In / Opt Out — Included",
+      "Unlimited Team Members",
+      "Customer Support",
+    ],
+    // Unlimited stays unlimited on both cycles, so the yearly view reads the
+    // same except for the window wording.
+    yearlyIncludes: [
+      "WhatsApp AI Agent",
+      "All Growth Features +",
+      "Send unlimited bulk broadcast messages/year (fair-use policy)",
       "Unlimited Contacts",
       "Unlimited Templates",
       "Unlimited Quick Replies",

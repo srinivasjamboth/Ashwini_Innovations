@@ -4,6 +4,7 @@ import { sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder'
 import { resolveTemplateRow, templateBodyParams, templateContentText } from '@/lib/whatsapp/template-body'
+import { buildSendTemplateSnapshot } from '@/lib/whatsapp/template-render'
 import { mirrorBroadcastToChat } from '@/lib/whatsapp/broadcast-chat'
 import {
   sanitizePhoneForMeta,
@@ -60,6 +61,14 @@ interface NewRecipient {
   messageParams?: SendTimeParams
 }
 
+/** Bound the per-request fan-out wall-clock on serverless hosts. */
+export const maxDuration = 60
+
+/** Wall-clock sleep used only for per-recipient pacing. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 export async function POST(request: Request) {
   try {
     // Requires the 'agent' role — `canSendMessages` in lib/auth/roles is
@@ -91,7 +100,14 @@ export async function POST(request: Request) {
       template_name,
       template_language,
       template_params,
+      delay_ms,
     } = body
+
+    // Per-recipient pacing (ms), clamped to the migration-051 range.
+    const rawDelay = typeof delay_ms === 'number' ? Math.floor(delay_ms) : 0
+    const pacingMs = Number.isFinite(rawDelay)
+      ? Math.min(60_000, Math.max(0, rawDelay))
+      : 0
 
     // Normalize to a list of {phone, params} regardless of shape.
     let recipients: NewRecipient[]
@@ -176,7 +192,8 @@ export async function POST(request: Request) {
     let sentCount = 0
     let failedCount = 0
 
-    for (const recipient of recipients) {
+    for (let rIdx = 0; rIdx < recipients.length; rIdx++) {
+      const recipient = recipients[rIdx]
       const sanitized = sanitizePhoneForMeta(recipient.phone)
 
       if (!isValidE164(sanitized)) {
@@ -229,6 +246,14 @@ export async function POST(request: Request) {
           whatsapp_message_id: sentMessageId,
         })
         sentCount++
+        // Body + full-delivery snapshot for this recipient. Computed
+        // once so the mirror's `content_text` and its `template_payload`
+        // cannot disagree about what was sent.
+        const bodyParams = templateBodyParams(
+          recipient.params,
+          recipient.messageParams,
+        )
+        const contentText = templateContentText(templateRow, bodyParams)
         // Mirror the delivered template into the recipient's chat thread
         // so the broadcast is visible in the Inbox (find-or-create on
         // the dedupe keys — never a duplicate number or conversation,
@@ -238,10 +263,15 @@ export async function POST(request: Request) {
           userId,
           phone: sanitized,
           templateName: template_name,
-          contentText: templateContentText(
-            templateRow,
-            templateBodyParams(recipient.params, recipient.messageParams),
-          ),
+          contentText,
+          templatePayload: buildSendTemplateSnapshot({
+            template: templateRow,
+            name: template_name,
+            language: resolvedTemplate.language,
+            messageParams: recipient.messageParams,
+            bodyParams,
+            storedBody: contentText,
+          }),
           whatsappMessageId: sentMessageId,
         })
       } else {
@@ -255,6 +285,15 @@ export async function POST(request: Request) {
           error: lastError || 'Unknown error',
         })
         failedCount++
+      }
+
+      // Pacing: space sends so a multi-recipient request never bursts
+      // past Meta's messaging rate (130429). Skipped after the last
+      // recipient and whenever no delay is configured. A paced send-now
+      // arrives as one recipient per request (browser-side sleep), so
+      // this only fires for callers that post a batch with delay_ms.
+      if (pacingMs > 0 && rIdx < recipients.length - 1) {
+        await sleep(pacingMs)
       }
     }
 

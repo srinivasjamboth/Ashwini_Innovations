@@ -274,6 +274,15 @@ export interface Message {
    */
   interactive_payload?: InteractiveMessagePayload;
   /**
+   * The complete template as it was actually delivered — header (text
+   * or media), substituted body, footer and every button. Lets the
+   * thread show what the recipient received instead of the body text
+   * alone. Only set on outbound `content_type === 'template'` rows
+   * written after migration 053; older rows carry null and the bubble
+   * reconstructs what it can from the live template. Migration 053.
+   */
+  template_payload?: TemplateMessagePayload | null;
+  /**
    * True when the AI auto-reply bot generated + sent this message (as
    * opposed to a human agent or a deterministic Flow/automation send,
    * which all share `sender_type='bot'`/`'agent'`). Drives the "AI"
@@ -446,6 +455,51 @@ export interface MessageTemplate {
   submission_error?: string;
   last_submitted_at?: string;
   created_at: string;
+}
+
+// ------------------------------------------------------------
+// Template delivery snapshot — what `messages.template_payload`
+// holds (migration 053). Deliberately a RENDER shape, not a copy of
+// `MessageTemplate`: every variable is already substituted, so the
+// thread never has to re-derive what the recipient saw, and the
+// record survives the template being edited or deleted later.
+// ------------------------------------------------------------
+
+export type TemplateHeaderKind = 'text' | 'image' | 'video' | 'document';
+
+export interface TemplatePayloadHeader {
+  kind: TemplateHeaderKind;
+  /** Rendered text for a TEXT header ({{1}} already replaced). */
+  text?: string | null;
+  /** Public URL of a media header — send-time override or the template's. */
+  mediaUrl?: string | null;
+  /** Meta media id, for the rare send that carried an id instead of a link. */
+  mediaId?: string | null;
+  /** Document name, when the header is a document and we know one. */
+  filename?: string | null;
+}
+
+export interface TemplatePayloadButton {
+  type: TemplateButton['type'];
+  /** Button label as the recipient sees it. */
+  text: string;
+  /** URL buttons: the resolved destination ({{1}} suffix applied). */
+  url?: string | null;
+  /** PHONE_NUMBER buttons: the dialable number. */
+  phoneNumber?: string | null;
+  /** COPY_CODE buttons: the code actually sent. */
+  code?: string | null;
+}
+
+export interface TemplateMessagePayload {
+  name: string;
+  language: string;
+  category?: string | null;
+  header?: TemplatePayloadHeader | null;
+  /** Body with every {{n}} replaced by the value that was sent. */
+  body: string;
+  footer?: string | null;
+  buttons: TemplatePayloadButton[];
 }
 
 export interface Pipeline {

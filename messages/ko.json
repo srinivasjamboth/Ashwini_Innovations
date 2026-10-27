@@ -278,7 +278,11 @@
       "downloadFailed": "첨부파일을 다운로드할 수 없습니다",
       "viewImage": "이미지 보기",
       "expandVideo": "동영상 확대",
-      "imageAlt": "공유된 이미지"
+      "imageAlt": "공유된 이미지",
+      "codeCopied": "코드를 복사했습니다",
+      "copyCodeFailed": "코드를 복사할 수 없습니다",
+      "quickReplyHint": "고객이 이 버튼을 눌러 답변합니다",
+      "flowHint": "WhatsApp에서 폼이 열립니다"
     },
     "mediaViewer": {
       "counter": "{total}개 중 {index}번째",
@@ -909,6 +913,8 @@
         "invalidError": "올바른 날짜와 시간을 입력하세요.",
         "scheduleButton": "브로드캐스트 예약",
         "scheduleConfirmTitle": "예약 브로드캐스트 확인",
+        "delayLabel": "메시지 간 지연",
+        "delayHint": "각 수신자 사이에 이만큼 대기하여 WhatsApp 발송 속도를 넘지 않도록 합니다. 대량 발송일수록 큰 값을 사용하세요.",
         "scheduleConfirmDesc": "이 브로드캐스트는 <b>{when}</b>에 연락처 <b>{count, number}</b>명에게 전송됩니다. 실행 전 언제든지 예약 변경이나 취소가 가능합니다."
       }
     }
@@ -2268,6 +2274,12 @@
     "gatewayPending": "온라인 결제가 아직 설정되지 않았습니다. 활성화되면 결제가 시작됩니다.",
     "checkoutError": "결제를 시작할 수 없습니다. 다시 시도해 주세요.",
     "catalogError": "플랜을 불러올 수 없습니다. 다시 시도해 주세요.",
+    "switchToYearly": "연간으로 전환",
+    "switchToMonthly": "월간으로 전환",
+    "yearlyUnavailable": "이 플랜에서는 연간 결제를 사용할 수 없습니다",
+    "yearlyLocked": "연간 플랜이 {date}까지 유지됩니다.",
+    "paymentProcessing": "결제가 승인되었습니다. 플랜을 적용하는 중입니다.",
+    "checkoutCancelled": "결제가 취소되었습니다. 청구된 금액이 없습니다.",
     "limits": {
       "contacts": "연락처",
       "bulk_messages": "대량 메시지",
@@ -2308,7 +2320,9 @@
     "date": "날짜",
     "plan": "플랜",
     "amount": "금액",
-    "status": "상태"
+    "status": "상태",
+    "windowMonthly": "이번 달",
+    "windowYearly": "올해"
   },
   "DashboardShell": {
     "loading": "불러오는 중..."

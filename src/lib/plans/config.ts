@@ -9,6 +9,23 @@
  * defaults below, which the spec asks us to expose as single constants.
  */
 
+/**
+ * YEARLY BILLING master switch (spec PART 2: "guard everything behind a
+ * switch"). ON by default — the real safety is per-PLAN and per-FIGURE
+ * data, not a global flag: a plan whose yearly price row or gateway plan
+ * id is missing simply has its yearly option disabled in the UI, and a
+ * figure with no stored yearly row falls back to its monthly row. Set
+ * `YEARLY_BILLING_ENABLED=false` to hide the Monthly/Yearly toggle and
+ * force every reader down the monthly path (byte-for-byte the pre-yearly
+ * behaviour) without touching data.
+ *
+ * Read as a plain env check (no zod / no new dependency) so this module
+ * stays dependency-free.
+ */
+export function yearlyBillingEnabled(): boolean {
+  return process.env.YEARLY_BILLING_ENABLED !== 'false';
+}
+
 /** Part 2: "the plan expires exactly at period end." Set >0 for leniency. */
 export const GRACE_DAYS = 0;
 

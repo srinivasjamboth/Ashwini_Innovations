@@ -29,6 +29,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
 import { normalizePhone } from '@/lib/whatsapp/phone-utils';
+import { isMissingColumnError } from '@/lib/whatsapp/template-render';
+import type { TemplateMessagePayload } from '@/types';
 
 export interface BroadcastChatMirrorArgs {
   accountId: string;
@@ -41,6 +43,14 @@ export interface BroadcastChatMirrorArgs {
   templateName: string;
   /** Substituted body the recipient saw. Null falls back to a [template:…] label. */
   contentText: string | null;
+  /**
+   * The complete delivery (header, body, footer, buttons) as sent to
+   * this recipient, so the thread shows what they received. Optional and
+   * additive: a caller that passes nothing keeps the old text-only
+   * mirror, and a row from before migration 053 renders the same way it
+   * does today.
+   */
+  templatePayload?: TemplateMessagePayload | null;
   /** Meta's message id for the delivered template. */
   whatsappMessageId: string;
 }
@@ -143,21 +153,38 @@ async function mirrorInner(
   // sender_type 'agent' + content_type 'template' is the same shape the
   // inbox composer's own template sends persist, so the thread renders
   // it identically.
-  const { error: msgErr } = await db
-    .from('messages')
-    .upsert(
-      {
-        conversation_id: conversationId,
-        sender_type: 'agent',
-        content_type: 'template',
-        content_text: args.contentText,
-        template_name: args.templateName,
-        message_id: args.whatsappMessageId,
-        status: 'sent',
-      },
-      { onConflict: 'conversation_id,message_id', ignoreDuplicates: true },
+  const messageRow = {
+    conversation_id: conversationId,
+    sender_type: 'agent',
+    content_type: 'template',
+    content_text: args.contentText,
+    template_name: args.templateName,
+    message_id: args.whatsappMessageId,
+    status: 'sent',
+  };
+  const payload = args.templatePayload ?? null;
+
+  const write = (row: Record<string, unknown>) =>
+    db
+      .from('messages')
+      .upsert(row, { onConflict: 'conversation_id,message_id', ignoreDuplicates: true });
+
+  const { error: msgErr } = await write(
+    payload ? { ...messageRow, template_payload: payload } : messageRow
+  );
+  if (msgErr && isMissingColumnError(msgErr, 'template_payload')) {
+    // Migration 053 has not run on this database. The template already
+    // reached the customer, so mirror it without the snapshot instead of
+    // losing the message from the thread.
+    console.warn(
+      '[broadcast-chat] messages.template_payload is unavailable — mirroring without the snapshot (apply migration 053)'
     );
-  if (msgErr) {
+    const retry = await write(messageRow);
+    if (retry.error) {
+      console.error('[broadcast-chat] message upsert failed:', retry.error.message);
+      return;
+    }
+  } else if (msgErr) {
     console.error('[broadcast-chat] message upsert failed:', msgErr.message);
     return;
   }

@@ -31,7 +31,7 @@ import {
   type FeatureFlag,
   type LimitFeature,
 } from './config';
-import { windowMonthKey } from './period';
+import { quotaWindowForPeriod, windowMonthKey } from './period';
 import type {
   EffectiveStatus,
   Entitlements,
@@ -86,6 +86,16 @@ export function __resetPlanCacheForTests(): void {
  * excludes Meta-rejected rows so a rejection never wastes a slot. Team is
  * profiles (incl. owner) + pending invitations. `bulk_messages` is the one
  * append-only counter in usage_counters.
+ *
+ * The counter's WINDOW is carried by the row (`quota_window`), which is
+ * what lets one reader serve a monthly reset and a yearly pool:
+ *   - 'monthly' window rows key on the calendar-month anchor (unchanged —
+ *     the query is byte-for-byte what it always was, so no existing
+ *     monthly plan can be affected),
+ *   - 'yearly' window rows key on the 12-month anniversary anchor and are
+ *     additionally filtered by `quota_window = 'yearly'`, because a
+ *     monthly and a yearly window can legitimately start on the SAME
+ *     date and must never share a counter.
  * ------------------------------------------------------------------ */
 interface CountFilter {
   column: string;
@@ -138,17 +148,23 @@ async function countUsage(
       return members + pending;
     }
     case 'bulk_messages': {
-      // Monthly window for paid plans; lifetime (period_month IS NULL)
-      // for the trial's "100 total" cap.
+      // Trial: lifetime pool (period_month IS NULL).
+      // Monthly plan: calendar-month window.
+      // Yearly plan: ONE pool spanning the subscription period — no
+      // monthly reset, no rollover, fresh key at renewal.
       const q = admin
         .from('usage_counters')
         .select('value')
         .eq('account_id', accountId)
         .eq('feature', 'bulk_messages');
       const { data, error } =
-        period === 'monthly'
-          ? await q.eq('period_month', windowMonthKey(windowAnchor, now))
-          : await q.is('period_month', null);
+        period === 'yearly'
+          ? await q
+              .eq('period_month', windowMonthKey(windowAnchor, now, 'yearly'))
+              .eq('quota_window', 'yearly')
+          : period === 'monthly'
+            ? await q.eq('period_month', windowMonthKey(windowAnchor, now))
+            : await q.is('period_month', null);
       if (error || !data || data.length === 0) return 0;
       return Number(data[0].value ?? 0);
     }
@@ -216,12 +232,22 @@ export async function getEntitlements(
     return emptyEnt;
   }
 
-  // Plan name + limits + features in parallel.
-  const [{ data: planRow }, { data: limitRows }, { data: featureRows }] = await Promise.all([
+  // Plan name + limits + features in parallel. Yearly subscribers also
+  // read their STORED yearly figures (migration 052) in the same batch.
+  const cycle = sub?.billing_cycle ?? 'monthly';
+  const [
+    { data: planRow },
+    { data: limitRows },
+    { data: featureRows },
+    yearlyRes,
+  ] = await Promise.all([
     admin.from('plans').select('id,name').eq('id', planId).maybeSingle(),
     admin.from('plan_limits').select('feature,value,period').eq('plan_id', planId),
     admin.from('plan_features').select('feature,enabled').eq('plan_id', planId),
-  ]);
+    cycle === 'yearly'
+      ? admin.from('plan_yearly_limits').select('feature,value,period').eq('plan_id', planId)
+      : Promise.resolve({ data: null, error: null }),
+  ] as const);
 
   const limits: Entitlements['limits'] = {};
   const limitPeriods: Entitlements['limitPeriods'] = {};
@@ -230,12 +256,28 @@ export async function getEntitlements(
     limitPeriods[r.feature as LimitFeature] = r.period as LimitPeriod;
   }
 
+  // Yearly overlay: a stored yearly row replaces its monthly figure; a
+  // figure with NO yearly row keeps the monthly one (spec PART 5 — the
+  // fallback is per-figure, so a half-seeded plan never over- or
+  // under-enforces). If the yearly table is missing (052 not applied) the
+  // read errors and we simply keep the monthly figures.
+  if (yearlyRes.error && cycle === 'yearly') {
+    console.error('[plans] yearly limits read failed (falling back to monthly):', yearlyRes.error.message);
+  }
+  for (const r of (yearlyRes.data ?? []) as { feature: string; value: number; period: string }[]) {
+    const f = r.feature as LimitFeature;
+    limits[f] = Number(r.value);
+    limitPeriods[f] = r.period as LimitPeriod;
+  }
+
   const features: Entitlements['features'] = {};
   for (const r of (featureRows ?? []) as { feature: string; enabled: boolean }[]) {
     features[r.feature as FeatureFlag] = r.enabled;
   }
 
-  // Window anchor for monthly quotas = subscription period start.
+  // Window anchor for counted quotas = subscription period start. On a
+  // yearly plan the reader walks 12-month steps from here, so the pool is
+  // the subscription period itself.
   const windowAnchor = new Date(
     sub?.current_period_start ?? sub?.trial_end ?? clock.toISOString(),
   );
@@ -256,6 +298,7 @@ export async function getEntitlements(
 
   const result: Entitlements = {
     ...emptyEnt,
+    cycle,
     planName: (planRow as { name?: string } | null)?.name ?? null,
     limits,
     limitPeriods,
@@ -384,31 +427,41 @@ export async function incrementUsage(
 
   const ent = await getEntitlements(accountId, { now, admin });
   const period = ent.limitPeriods[feature] ?? 'total';
+  const quotaWindow = quotaWindowForPeriod(period);
 
-  // Resolve current values for the window we're about to write.
+  // Resolve current values for the window we're about to write. The
+  // window STEP follows the period: calendar months for a monthly pool,
+  // 12-month steps for a yearly pool, none for a lifetime pool.
   const anchor = new Date(ent.periodStart ?? now.toISOString());
-  const monthKey = period === 'monthly' ? windowMonthKey(anchor, now) : null;
+  const monthKey =
+    period === 'total'
+      ? null
+      : windowMonthKey(anchor, now, period === 'yearly' ? 'yearly' : 'monthly');
 
-  const { data: existing } = await admin
-    .from('usage_counters')
-    .select('id,value')
-    .eq('account_id', accountId)
-    .eq('feature', feature)
-    .eq('period_month', monthKey as string)
-    .maybeSingle();
-
-  // For lifetime (period_month null) the eq above won't match; refetch.
-  let row: { id: string; value: number } | null = existing ?? null;
-  if (!row && monthKey === null) {
-    const { data } = await admin
+  // Resolve the existing counter row FOR THIS WINDOW.
+  //
+  // The `quota_window` filter matters: a monthly and a yearly window can
+  // legitimately share the same `period_month` (switch to yearly in the
+  // middle of a monthly window makes both anchors the same date). Without
+  // the filter the increment would silently top up the stale monthly row,
+  // which the yearly reader never looks at — the pool would read 0 while
+  // messages kept being counted somewhere invisible. An error here means
+  // the column does not exist yet (052 not applied), so we retry in the
+  // legacy shape instead of losing the count.
+  const lookup = async (filterWindow: boolean) => {
+    let q = admin
       .from('usage_counters')
       .select('id,value')
       .eq('account_id', accountId)
-      .eq('feature', feature)
-      .is('period_month', null)
-      .maybeSingle();
-    row = (data as { id: string; value: number } | null) ?? null;
-  }
+      .eq('feature', feature);
+    q = monthKey === null ? q.is('period_month', null) : q.eq('period_month', monthKey);
+    if (filterWindow) q = q.eq('quota_window', quotaWindow);
+    const { data, error } = await q.maybeSingle();
+    return { row: (data as { id: string; value: number } | null) ?? null, error };
+  };
+
+  const windowed = await lookup(true);
+  const row = windowed.error ? (await lookup(false)).row : windowed.row;
 
   const newValue = Number(row?.value ?? 0) + by;
 
@@ -418,12 +471,24 @@ export async function incrementUsage(
       .update({ value: newValue, updated_at: now.toISOString() })
       .eq('id', row.id);
   } else {
-    await admin.from('usage_counters').insert({
+    const record = {
       account_id: accountId,
       feature,
       period_month: monthKey,
       value: newValue,
-    });
+      quota_window: quotaWindow,
+    };
+    const { error: insertError } = await admin.from('usage_counters').insert(record);
+    if (insertError && /quota_window/.test(insertError.message)) {
+      // Migration 052 not applied yet: the column does not exist. Write the
+      // legacy shape so bulk usage keeps being counted (never fail open into
+      // "unlimited" just because of schema drift).
+      const legacy = { account_id: accountId, feature, period_month: monthKey, value: newValue };
+      const { error: legacyError } = await admin.from('usage_counters').insert(legacy);
+      if (legacyError) console.error('[plans] usage_counters insert failed:', legacyError.message);
+    } else if (insertError) {
+      console.error('[plans] usage_counters insert failed:', insertError.message);
+    }
   }
 
   if (
@@ -432,7 +497,7 @@ export async function incrementUsage(
     newValue >= FAIR_USE_ALERT_THRESHOLD
   ) {
     console.warn(
-      `[plans][fair-use] account ${accountId} crossed ${FAIR_USE_ALERT_THRESHOLD} bulk messages in the current month (now ${newValue}).`,
+      `[plans][fair-use] account ${accountId} crossed ${FAIR_USE_ALERT_THRESHOLD} bulk messages in the current ${period} window (now ${newValue}).`,
     );
   }
 

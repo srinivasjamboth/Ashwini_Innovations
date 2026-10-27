@@ -9,7 +9,7 @@
  * injection tests deterministic across the machine's local timezone.
  */
 
-import type { BillingCycle } from './types';
+import type { BillingCycle, QuotaWindow } from './types';
 
 /**
  * Add a whole number of calendar months to `from`, clamping the day to
@@ -46,27 +46,56 @@ export function advancePeriod(from: Date, cycle: BillingCycle): Date {
 }
 
 /** First instant of the current bulk-message window, stepping calendar
- *  months forward from the subscription anchor (`subStart`). Monthly quota
- *  resets each month on a yearly plan (Part 1) — anchored to subscription
- *  start, never rolls over. Bounded: a yearly plan walks at most 12 steps. */
-export function currentWindowAnchor(subStart: Date, now: Date): Date {
+ *  months forward from the subscription anchor (`subStart`).
+ *
+ *  The step is the cycle: 1 month for a monthly plan (unchanged — every
+ *  existing caller/test that omits `cycle` gets the monthly walk) and 12
+ *  months for a yearly plan, so the yearly quota is ONE pool over the
+ *  subscription period: no monthly reset, no rollover, and it flips to a
+ *  fresh key on the anniversary (= at renewal).
+ *
+ *  Renewal keeps `current_period_start` as the anchor (see billing.ts), so
+ *  walking whole steps from the anchor always finds the window that
+ *  contains `now`. Bounded by a guard so a bad anchor can never spin. */
+export function currentWindowAnchor(
+  subStart: Date,
+  now: Date,
+  cycle: BillingCycle = 'monthly',
+): Date {
+  const step = cycleStepMonths(cycle);
   let anchor = new Date(subStart.getTime());
   // Walk back if now is somehow before the start (defensive, shouldn't
   // happen for an active sub); then forward while the NEXT boundary is
   // still at-or-before now.
-  while (anchor > now) anchor = addCalendarMonths(anchor, -1);
-  let next = addCalendarMonths(anchor, 1);
+  while (anchor > now) anchor = addCalendarMonths(anchor, -step);
+  let next = addCalendarMonths(anchor, step);
   let guard = 0;
   while (next <= now && guard < 1200) {
     anchor = next;
-    next = addCalendarMonths(anchor, 1);
+    next = addCalendarMonths(anchor, step);
     guard += 1;
   }
   return anchor;
 }
 
+/** How many calendar months one billing cycle spans. */
+export function cycleStepMonths(cycle: BillingCycle): number {
+  return cycle === 'yearly' ? 12 : 1;
+}
+
+/** The `usage_counters.quota_window` label for a limit period. `total`
+ *  limits are live COUNTs and never touch a counter row, so the only
+ *  lifetime pool in practice is the free trial. */
+export function quotaWindowForPeriod(period: 'total' | 'monthly' | 'yearly'): QuotaWindow {
+  return period === 'yearly' ? 'yearly' : period === 'monthly' ? 'monthly' : 'lifetime';
+}
+
 /** The `usage_counters.period_month` DATE key for the current window. */
-export function windowMonthKey(subStart: Date, now: Date): string {
-  const anchor = currentWindowAnchor(subStart, now);
+export function windowMonthKey(
+  subStart: Date,
+  now: Date,
+  cycle: BillingCycle = 'monthly',
+): string {
+  const anchor = currentWindowAnchor(subStart, now, cycle);
   return anchor.toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
 }

@@ -33,9 +33,19 @@ interface AudienceConfig {
 
 type SendMode = 'now' | 'schedule';
 
+/**
+ * Pacing presets (ms) offered to the operator. 0 keeps the original
+ * batched behaviour; larger values space individual sends further apart
+ * so a big broadcast never bursts past Meta's messaging rate (130429).
+ * Labels are rendered purely as `${ms / 1000}s` (no translation needed).
+ */
+const DELAY_PRESETS_MS = [0, 2000, 3000, 5000, 7000, 10000] as const;
+
 interface Step4Props {
   name: string;
   onNameChange: (name: string) => void;
+  sendDelayMs: number;
+  onDelayChange: (ms: number) => void;
   template: MessageTemplate;
   audience: AudienceConfig;
   onSend: () => void;
@@ -50,6 +60,8 @@ interface Step4Props {
 export function Step4ScheduleSend({
   name,
   onNameChange,
+  sendDelayMs,
+  onDelayChange,
   template,
   audience,
   onSend,
@@ -282,6 +294,33 @@ export function Step4ScheduleSend({
           )}
         </div>
       )}
+
+      {/* Per-recipient pacing — applies to send-now and scheduled alike. */}
+      <div>
+        <label className="mb-1.5 block text-sm font-medium text-foreground">
+          {t('scheduleSend.delayLabel')}
+        </label>
+        <div className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-muted p-0.5">
+          {DELAY_PRESETS_MS.map((ms) => (
+            <button
+              key={ms}
+              type="button"
+              onClick={() => onDelayChange(ms)}
+              disabled={isProcessing}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium tabular-nums transition-colors disabled:opacity-50 ${
+                sendDelayMs === ms
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {ms / 1000}s
+            </button>
+          ))}
+        </div>
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          {t('scheduleSend.delayHint')}
+        </p>
+      </div>
 
       {/* Processing overlay */}
       {isProcessing && (

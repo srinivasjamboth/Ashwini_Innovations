@@ -81,6 +81,22 @@ export function formatCurrency(
 }
 
 /**
+ * Whole-number grouping for COUNTS (contacts, bulk messages, templates…):
+ * 12000 → "12,000". Unit-less sibling of `formatCurrency`, using the same
+ * locale-aware `Intl` grouping the currency formatter uses.
+ *
+ * This exists so every plan surface — landing pricing, the upgrade modal,
+ * the billing tab, the admin panel — prints a figure the same way. Before
+ * it, the landing page hardcoded `en-IN` grouping while the modal used the
+ * runtime default, so the same cap read "1,20,000" on one surface and
+ * "120,000" on another (visible the moment yearly figures got big).
+ */
+export function formatCount(value: number): string {
+  const amount = Number(value) || 0;
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(amount);
+}
+
+/**
  * Compact currency for tight spaces (donut center, legend rows):
  * "$1.2M" / "€34.5k" / "₹900". Uses the currency's symbol from
  * CURRENCIES, falling back to the code when we don't carry a symbol.

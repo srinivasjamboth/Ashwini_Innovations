@@ -27,6 +27,7 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils';
 import { resolveTemplateRow, templateContentText } from '@/lib/whatsapp/template-body';
+import { buildSendTemplateSnapshot } from '@/lib/whatsapp/template-render';
 import { mirrorBroadcastToChat } from '@/lib/whatsapp/broadcast-chat';
 import type { MessageTemplate } from '@/types';
 import { findOrCreateContact } from '@/lib/api/v1/contacts';
@@ -92,6 +93,20 @@ export interface BroadcastPlan {
   planned: PlannedRecipient[];
   /** Phones rejected up front (invalid E.164) — counted as failed. */
   rejected: number;
+  /**
+   * Milliseconds to wait between individual recipient sends. Driven by
+   * `broadcasts.send_delay_ms` (migration 051) so a scheduled send, a
+   * Resume, and a Retry-failed pass all pace identically to the send the
+   * operator configured, keeping the fan-out under Meta's upstream
+   * messaging rate (130429). Undefined/0 → fire back-to-back, i.e. the
+   * original behaviour (the v1 public API never sets it).
+   */
+  sendDelayMs?: number;
+}
+
+/** Wall-clock sleep used only for per-recipient pacing. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 const MAX_RECIPIENTS = 1000;
@@ -285,7 +300,10 @@ export async function deliverBroadcast(
   db: SupabaseClient,
   plan: BroadcastPlan
 ): Promise<void> {
-  for (const recipient of plan.planned) {
+  const delayMs = Math.max(0, plan.sendDelayMs ?? 0);
+  const lastIndex = plan.planned.length - 1;
+  for (let idx = 0; idx < plan.planned.length; idx++) {
+    const recipient = plan.planned[idx];
     const variants = phoneVariants(recipient.phone);
     let sentMessageId: string | null = null;
     let lastError: string | null = null;
@@ -323,6 +341,7 @@ export async function deliverBroadcast(
           error_message: null,
         })
         .eq('id', recipient.recipientRowId);
+      const contentText = templateContentText(plan.templateRow, recipient.params);
       // Mirror the delivered template into the recipient's chat thread
       // (shared with the dashboard broadcast route). Best-effort by
       // contract — it never throws, so one mirror failure can't abort
@@ -333,7 +352,15 @@ export async function deliverBroadcast(
         phone: recipient.phone,
         contactId: recipient.contactId,
         templateName: plan.templateName,
-        contentText: templateContentText(plan.templateRow, recipient.params),
+        contentText,
+        templatePayload: buildSendTemplateSnapshot({
+          template: plan.templateRow,
+          name: plan.templateName,
+          language: plan.templateLanguage,
+          messageParams: recipient.messageParams,
+          bodyParams: recipient.params,
+          storedBody: contentText,
+        }),
         whatsappMessageId: sentMessageId,
       });
     } else {
@@ -344,6 +371,13 @@ export async function deliverBroadcast(
           error_message: lastError || 'Unknown error',
         })
         .eq('id', recipient.recipientRowId);
+    }
+
+    // Pacing: space each send so a large fan-out never bursts past
+    // Meta's messaging rate. Skipped after the final recipient (nothing
+    // left to space) and whenever no delay is configured.
+    if (delayMs > 0 && idx < lastIndex) {
+      await sleep(delayMs);
     }
   }
 

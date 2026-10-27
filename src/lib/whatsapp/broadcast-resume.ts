@@ -43,6 +43,31 @@ export const RESUME_SCOPES: readonly ResumeScope[] = [
 export const RESUME_MAX_PER_REQUEST = 1000;
 
 /**
+ * Wall-clock budget for a single pass. When a broadcast carries a
+ * per-recipient `send_delay_ms`, deliverBroadcast sleeps between sends,
+ * so the recipients one pass can handle is bounded by TIME, not just the
+ * 1 000 count cap — otherwise a 10 s delay × 1 000 recipients would run
+ * ~2.8 h inside one request and blow the function timeout. Whatever
+ * doesn't fit stays 'pending' and is picked up by the next pass/tick or a
+ * Resume click. `EST_SEND_MS` is a conservative allowance for the Meta
+ * round-trip itself on top of the configured delay.
+ */
+const RESUME_PASS_WALL_BUDGET_MS = 55_000;
+const EST_SEND_MS = 500;
+
+/**
+ * Recipients a single pass may take, given the configured per-recipient
+ * delay. With no delay this is the plain count cap (unchanged behaviour).
+ */
+function passCapForDelay(sendDelayMs: number): number {
+  if (sendDelayMs <= 0) return RESUME_MAX_PER_REQUEST;
+  const byTime = Math.floor(
+    RESUME_PASS_WALL_BUDGET_MS / (sendDelayMs + EST_SEND_MS),
+  );
+  return Math.max(1, Math.min(RESUME_MAX_PER_REQUEST, byTime));
+}
+
+/**
  * How long a `delivery_locked_at` stamp is honoured before it is read
  * as abandoned. Long enough that a legitimately slow pass is never
  * stolen from, short enough that a crashed one doesn't wedge the
@@ -150,7 +175,7 @@ export async function planBroadcastResume(
 ): Promise<ResumePlan> {
   const { data: broadcast, error: bcError } = await db
     .from('broadcasts')
-    .select('id, user_id, template_name, template_language')
+    .select('id, user_id, template_name, template_language, send_delay_ms')
     .eq('id', broadcastId)
     .eq('account_id', accountId)
     .maybeSingle();
@@ -196,7 +221,11 @@ export async function planBroadcastResume(
       .in('id', unsendable);
   }
 
-  const slice = sendable.slice(0, RESUME_MAX_PER_REQUEST);
+  const sendDelayMs = Math.max(
+    0,
+    (broadcast as { send_delay_ms?: number }).send_delay_ms ?? 0,
+  );
+  const slice = sendable.slice(0, passCapForDelay(sendDelayMs));
   const remaining = sendable.length - slice.length;
 
   if (slice.length === 0) {
@@ -247,6 +276,7 @@ export async function planBroadcastResume(
     phoneNumberId: config.phone_number_id,
     accessToken: decrypt(config.access_token),
     templateRow: resolvedTemplate.row,
+    sendDelayMs,
     planned: slice.map((row) => ({
       recipientRowId: row.id,
       contactId: contactRow(row)?.id,

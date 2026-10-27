@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getPlanCatalog } from '@/lib/plans/catalog';
+import { yearlyBillingEnabled } from '@/lib/plans/config';
 
 /**
  * GET /api/billing/plans
@@ -16,7 +17,13 @@ export async function GET() {
   try {
     const plans = await getPlanCatalog();
     return NextResponse.json(
-      { plans },
+      {
+        plans,
+        // Lets every surface hide the Monthly/Yearly toggle at once when the
+        // operator switches yearly billing off. Per-plan availability is on
+        // each card (`yearlyAvailable`).
+        yearlyBilling: yearlyBillingEnabled(),
+      },
       { headers: { 'Cache-Control': 'public, s-maxage=120, stale-while-revalidate=300' } },
     );
   } catch (err) {

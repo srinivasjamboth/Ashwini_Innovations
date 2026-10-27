@@ -64,6 +64,15 @@ function featureLabel(key: string): string {
   return FEATURE_LABELS[key] ?? key.replace(/_/g, " ");
 }
 
+// The window a limit is measured over, in plain words. `yearly` is a
+// stored period (migration 052), not a derived one — a yearly plan shows
+// the yearly row it actually enforces, so this only phrases it.
+function periodWord(period: string): string {
+  if (period === "monthly") return "per month";
+  if (period === "yearly") return "per year";
+  return "total";
+}
+
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-4 border-b border-border/50 py-2 last:border-0">
@@ -214,7 +223,7 @@ export function SubscriptionDetail({
                       {l.value === UNLIMITED ? "Unlimited" : l.value.toLocaleString("en-IN")}
                     </span>
                     <span className="ml-1.5 text-xs text-muted-foreground">
-                      {l.period === "total" ? "total" : `per ${l.period}`}
+                      {periodWord(l.period)}
                     </span>
                   </InfoRow>
                 );

@@ -51,6 +51,13 @@ interface BroadcastPayload {
    * falls back to the template's stored URL only when this is empty.
    */
   headerMediaUrl?: string;
+  /**
+   * Operator-chosen pacing (ms) between individual recipient sends, to
+   * stay under Meta's messaging rate (130429). 0/undefined = today's
+   * batched behaviour. Persisted on the broadcast row so a Resume and a
+   * scheduled send pace identically. Range 0–60 000.
+   */
+  sendDelayMs?: number;
 }
 
 interface UseBroadcastSendingReturn {
@@ -360,6 +367,11 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
     setProgress(0);
 
     const supabase = createClient();
+    // Operator pacing, clamped to the migration-051 range (0–60s).
+    const rawDelay = payload.sendDelayMs ?? 0;
+    const sendDelayMs = Number.isFinite(rawDelay)
+      ? Math.min(60_000, Math.max(0, Math.floor(rawDelay)))
+      : 0;
 
     try {
       // ── Step 0: Resolve current user ──────────────────────────────
@@ -410,6 +422,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
           read_count: 0,
           replied_count: 0,
           failed_count: 0,
+          send_delay_ms: sendDelayMs,
         })
         .select()
         .single();
@@ -487,6 +500,10 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
 
       let failedCount = 0;
       const totalRecipients = recipients.length;
+      // With a per-recipient delay, drop to one send per request and pace
+      // it in the browser (client sleep is not bound by the function
+      // timeout). Without one, keep the original batch-of-10 cadence.
+      const batchSize = sendDelayMs > 0 ? 1 : SEND_BATCH_SIZE;
 
       // Media-header templates (image/video/document) require a media
       // URL on every send. Collected in the personalize step and applied
@@ -501,8 +518,8 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       const messageParams =
         isMediaHeader && headerMediaUrl ? { headerMediaUrl } : undefined;
 
-      for (let i = 0; i < recipients.length; i += SEND_BATCH_SIZE) {
-        const batch = recipients.slice(i, i + SEND_BATCH_SIZE);
+      for (let i = 0; i < recipients.length; i += batchSize) {
+        const batch = recipients.slice(i, i + batchSize);
 
         const apiRecipients = batch
           .filter((r) => r.contact?.phone)
@@ -604,8 +621,8 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
           30 + Math.round(((i + batch.length) / totalRecipients) * 60);
         setProgress(progressPct);
 
-        if (i + SEND_BATCH_SIZE < recipients.length) {
-          await sleep(SEND_BATCH_DELAY_MS);
+        if (i + batchSize < recipients.length) {
+          await sleep(sendDelayMs > 0 ? sendDelayMs : SEND_BATCH_DELAY_MS);
         }
       }
 
@@ -689,6 +706,10 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
           scheduled_at: scheduledAt,
           timezone,
           header_media_url: payload.headerMediaUrl?.trim() || null,
+          send_delay_ms: Math.min(
+            60_000,
+            Math.max(0, Math.floor(payload.sendDelayMs ?? 0)),
+          ),
           recipients,
         }),
       });

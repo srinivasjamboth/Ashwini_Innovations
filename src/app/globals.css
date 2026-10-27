@@ -48,6 +48,17 @@
   --color-primary-hover: var(--primary-hover);
   --color-primary-soft: var(--primary-soft);
   --color-primary-soft-2: var(--primary-soft-2);
+  /* WhatsApp's own sent-bubble greens, exposed as utilities for the
+   * delivered-template card in the inbox (bg-chat-bubble,
+   * text-chat-bubble-link, …). Literal brand colours on purpose — the
+   * same call the phone mockup in Settings makes — because an approved
+   * creative reads as artwork: tinting it with the accent would misreport
+   * what the customer saw. Mode-scoped like every other surface. */
+  --color-chat-bubble: var(--chat-bubble);
+  --color-chat-bubble-foreground: var(--chat-bubble-foreground);
+  --color-chat-bubble-muted: var(--chat-bubble-muted);
+  --color-chat-bubble-link: var(--chat-bubble-link);
+  --color-chat-bubble-border: var(--chat-bubble-border);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -119,6 +130,12 @@ html[data-mode="dark"] {
   --sidebar-accent: oklch(1 0 0 / 0.12);
   --sidebar-accent-foreground: #ffffff;
   --sidebar-border: oklch(1 0 0 / 0.14);
+  /* Sent bubble on a dark screen (WhatsApp's own dark-mode green). */
+  --chat-bubble: #005c4b;
+  --chat-bubble-foreground: #e9edef;
+  --chat-bubble-muted: #8696a0;
+  --chat-bubble-link: #53bdeb;
+  --chat-bubble-border: rgba(233, 237, 239, 0.14);
 }
 
 html[data-mode="light"] {
@@ -149,6 +166,12 @@ html[data-mode="light"] {
   --sidebar-accent: oklch(1 0 0 / 0.12);
   --sidebar-accent-foreground: #ffffff;
   --sidebar-border: oklch(1 0 0 / 0.14);
+  /* Sent bubble on a light screen — the "lightest green" of WhatsApp. */
+  --chat-bubble: #d9fdd3;
+  --chat-bubble-foreground: #111b21;
+  --chat-bubble-muted: #66778a;
+  --chat-bubble-link: #017561;
+  --chat-bubble-border: rgba(17, 27, 33, 0.12);
 }
 
 /* ---- ACCENT: primary color ---- */

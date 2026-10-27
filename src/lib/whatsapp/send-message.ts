@@ -47,6 +47,10 @@ import {
   templateBodyParams,
   templateContentText,
 } from '@/lib/whatsapp/template-body';
+import {
+  buildSendTemplateSnapshot,
+  isMissingColumnError,
+} from '@/lib/whatsapp/template-render';
 
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
 export const VALID_MESSAGE_TYPES = [
@@ -473,23 +477,75 @@ export async function sendMessageToConversation(
           )
         : (contentText ?? null);
 
-  const { data: messageRecord, error: msgError } = await db
+  // …and templates additionally snapshot the WHOLE delivery (header,
+  // body, footer, buttons) so the thread can show what the recipient
+  // got instead of the body text alone. Null whenever the send resolved
+  // no local `message_templates` row — then nothing is stored and the
+  // bubble keeps its existing text rendering.
+  const templatePayload =
+    messageType === 'template'
+      ? buildSendTemplateSnapshot({
+          template: templateRow,
+          name: templateName ?? templateRow?.name ?? '',
+          language: sendLanguage,
+          messageParams: templateMessageParams,
+          bodyParams: templateBodyParams(templateParams, templateMessageParams),
+          storedBody: persistedText,
+        })
+      : null;
+
+  // Widely typed on purpose: the row is handed to `.insert()` either as
+  // this object or with `template_payload` spread onto it, and a union of
+  // two object literals is what supabase-js' untyped schema helper rejects
+  // as "excess property". Same columns, same payload either way.
+  const messageRow: Record<string, unknown> = {
+    conversation_id: conversationId,
+    sender_type: 'agent',
+    content_type: messageType,
+    content_text: persistedText,
+    media_url: mediaUrl || null,
+    template_name: templateName || null,
+    interactive_payload:
+      messageType === 'interactive' ? interactivePayload : null,
+    message_id: waMessageId,
+    status: 'sent',
+    reply_to_message_id: replyToMessageId || null,
+  };
+
+  const {
+    data: firstRecord,
+    error: firstError,
+  } = await db
     .from('messages')
-    .insert({
-      conversation_id: conversationId,
-      sender_type: 'agent',
-      content_type: messageType,
-      content_text: persistedText,
-      media_url: mediaUrl || null,
-      template_name: templateName || null,
-      interactive_payload:
-        messageType === 'interactive' ? interactivePayload : null,
-      message_id: waMessageId,
-      status: 'sent',
-      reply_to_message_id: replyToMessageId || null,
-    })
+    .insert(
+      templatePayload
+        ? { ...messageRow, template_payload: templatePayload }
+        : messageRow
+    )
     .select()
     .single();
+
+  let messageRecord = firstRecord;
+  let msgError = firstError;
+
+  if (
+    firstError &&
+    templatePayload &&
+    isMissingColumnError(firstError, 'template_payload')
+  ) {
+    // Migration 053 has not run on this database yet. Meta already
+    // delivered, so losing the snapshot beats losing the message.
+    console.warn(
+      '[send-message] messages.template_payload is unavailable — storing this send without its snapshot (apply migration 053)'
+    );
+    const retry = await db
+      .from('messages')
+      .insert(messageRow)
+      .select()
+      .single();
+    messageRecord = retry.data;
+    msgError = retry.error;
+  }
 
   if (msgError) {
     console.error('[send-message] error inserting sent message:', msgError);

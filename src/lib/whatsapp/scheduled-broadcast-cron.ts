@@ -38,6 +38,18 @@ import {
 const DUE_PER_TICK = 25;
 const MAX_PASSES_PER_BROADCAST = 20;
 
+/**
+ * Wall-clock ceiling for a single cron invocation. A per-recipient
+ * `send_delay_ms` (migration 051) makes each pass slower, so without a
+ * budget guard a delayed campaign could run past the route's
+ * `maxDuration` and be force-killed mid-Meta-call. Bailing out cleanly
+ * instead leaves work 'pending' — due-but-unclaimed broadcasts are still
+ * 'scheduled' and picked up next tick, and a mid-campaign break leaves
+ * that row 'sending' for a Resume. Never fires in the fast (0-delay)
+ * normal case, which completes well inside the budget.
+ */
+const CRON_INVOCATION_BUDGET_MS = 240_000;
+
 interface DueRow {
   id: string;
   account_id: string;
@@ -79,7 +91,11 @@ export async function runScheduledBroadcasts(
   let fired = 0;
   let skippedExpired = 0;
   let skippedQuota = 0;
+  const invocationStart = Date.now();
   for (const row of due as DueRow[]) {
+    // Out of wall-time: stop claiming; the rest stay 'scheduled' and fire
+    // on the next tick.
+    if (Date.now() - invocationStart > CRON_INVOCATION_BUDGET_MS) break;
     // Plan enforcement (Part 3/4): a scheduled send fires server-side with no
     // user in the loop, so the checks the interactive path gets for free must
     // happen here. An EXPIRED account never sends (leave the row 'scheduled'
@@ -142,6 +158,9 @@ export async function runScheduledBroadcasts(
         await deliverBroadcast(admin, res.plan);
         // 0 means this pass covered every remaining sendable recipient.
         if (res.remaining === 0) break;
+        // Wall-time guard for long-delayed campaigns; the row stays
+        // 'sending' with 'pending' recipients for a Resume / later pass.
+        if (Date.now() - invocationStart > CRON_INVOCATION_BUDGET_MS) break;
       }
       // Settle whatever is left (also catches the fully-done case).
       await finalizeBroadcastStatus(admin, row.id);

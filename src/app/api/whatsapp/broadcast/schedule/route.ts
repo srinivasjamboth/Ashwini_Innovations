@@ -44,6 +44,8 @@ interface SchedulePayload {
   template_variables?: Record<string, unknown>;
   audience_filter?: Record<string, unknown>;
   recipients?: ScheduledRecipient[];
+  /** Per-recipient pacing (ms). Clamped server-side; 0 = unpaced. */
+  send_delay_ms?: number;
 }
 
 // A schedule row is a plan, not a send — recipients are inserted in
@@ -54,6 +56,13 @@ const INSERT_BATCH_SIZE = 200;
 // window the wizard enforces (lib/whatsapp/schedule-time), so a pick the
 // client green-lights is never rejected here.
 const MIN_LEAD_MS = SCHEDULE_MIN_LEAD_MS;
+
+/** Clamp the caller-supplied pacing to the migration-051 range (0–60s). */
+function clampSendDelay(value: unknown): number {
+  const n = typeof value === 'number' ? Math.floor(value) : 0;
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(n, 60_000);
+}
 
 export async function POST(request: Request) {
   let createdBroadcastId: string | null = null;
@@ -95,6 +104,7 @@ export async function POST(request: Request) {
       template_variables,
       audience_filter,
       recipients,
+      send_delay_ms,
     } = body;
 
     if (!name || !name.trim()) {
@@ -149,6 +159,7 @@ export async function POST(request: Request) {
         scheduled_at: when.toISOString(),
         scheduled_tz: timezone ?? null,
         header_media_url: header_media_url ?? null,
+        send_delay_ms: clampSendDelay(send_delay_ms),
         status: 'scheduled',
         total_recipients: recipients.length,
       })

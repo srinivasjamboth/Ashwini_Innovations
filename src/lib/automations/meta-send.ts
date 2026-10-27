@@ -15,6 +15,10 @@ import {
   resolveTemplateRow,
   templateContentText,
 } from '@/lib/whatsapp/template-body'
+import {
+  buildSendTemplateSnapshot,
+  isMissingColumnError,
+} from '@/lib/whatsapp/template-render'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
@@ -230,7 +234,26 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
       : templateContentText(templateRow, input.params ?? [])
   const template_name = input.kind === 'template' ? input.templateName : null
 
-  const { error: msgErr } = await db.from('messages').insert({
+  // Snapshot of the whole delivery (header / body / footer / buttons)
+  // so the inbox thread can render what the customer received. Null when
+  // no local row resolved — nothing is stored, and the bubble keeps its
+  // existing text-only fallback (it can still reconstruct later, once
+  // the template is synced).
+  const templatePayload =
+    input.kind === 'template'
+      ? buildSendTemplateSnapshot({
+          template: templateRow,
+          name: input.templateName,
+          language: input.language,
+          bodyParams: input.params,
+          storedBody: content_text,
+        })
+      : null
+
+  // `Record<string, unknown>` for the same reason as the manual send path:
+  // the row is inserted either bare or with `template_payload` spread on,
+  // and supabase-js' untyped insert helper rejects that union.
+  const messageRow: Record<string, unknown> = {
     conversation_id: input.conversationId,
     sender_type: 'bot',
     content_type,
@@ -238,7 +261,27 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
     template_name,
     message_id: waMessageId,
     status: 'sent',
-  })
+  }
+
+  const { error: firstErr } = await db.from('messages').insert(
+    templatePayload
+      ? { ...messageRow, template_payload: templatePayload }
+      : messageRow
+  )
+  let msgErr = firstErr
+  if (
+    firstErr &&
+    templatePayload &&
+    isMissingColumnError(firstErr, 'template_payload')
+  ) {
+    // Migration 053 has not run here. Meta already delivered, so drop
+    // the snapshot rather than lose the message from the thread.
+    console.warn(
+      '[automations] messages.template_payload is unavailable — storing this send without its snapshot (apply migration 053)'
+    )
+    const retry = await db.from('messages').insert(messageRow)
+    msgErr = retry.error
+  }
   if (msgErr) {
     // Meta already has the message; record the DB error but don't pretend
     // the send failed. The engine wraps this in a log line.

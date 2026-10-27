@@ -278,7 +278,11 @@
       "downloadFailed": "Não foi possível baixar o anexo",
       "viewImage": "Ver imagem",
       "expandVideo": "Expandir vídeo",
-      "imageAlt": "Imagem compartilhada"
+      "imageAlt": "Imagem compartilhada",
+      "codeCopied": "Código copiado",
+      "copyCodeFailed": "Não foi possível copiar o código",
+      "quickReplyHint": "O cliente toca aqui para responder",
+      "flowHint": "Abre um formulário no WhatsApp"
     },
     "mediaViewer": {
       "counter": "{index} de {total}",
@@ -909,6 +913,8 @@
         "invalidError": "Informe uma data e hora válidas.",
         "scheduleButton": "Agendar disparo",
         "scheduleConfirmTitle": "Confirmar disparo agendado",
+        "delayLabel": "Atraso entre mensagens",
+        "delayHint": "Aguarde esse tempo entre cada destinatario para nao exceder a taxa de envio do WhatsApp. Use um valor maior em envios grandes.",
         "scheduleConfirmDesc": "Este disparo será enviado para <b>{count, number}</b> {count, plural, =1 {contato} other {contatos}} em <b>{when}</b>. Você pode reagendar ou cancelá-lo a qualquer momento antes de ele ser executado."
       }
     }
@@ -2256,6 +2262,12 @@
     "gatewayPending": "O pagamento online ainda nao esta configurado. O checkout abrira assim que estiver ativo.",
     "checkoutError": "Nao conseguimos iniciar o pagamento. Tente novamente.",
     "catalogError": "Nao conseguimos carregar os planos. Tente novamente.",
+    "switchToYearly": "Mudar para anual",
+    "switchToMonthly": "Mudar para mensal",
+    "yearlyUnavailable": "A cobrança anual ainda não está disponível para este plano",
+    "yearlyLocked": "Seu plano anual vale até {date}.",
+    "paymentProcessing": "Pagamento autorizado - ativando seu plano agora.",
+    "checkoutCancelled": "A compra foi cancelada. Nenhuma cobrança foi feita.",
     "limits": {
       "contacts": "Contatos",
       "bulk_messages": "Mensagens em massa",
@@ -2296,7 +2308,9 @@
     "date": "Data",
     "plan": "Plano",
     "amount": "Valor",
-    "status": "Status"
+    "status": "Status",
+    "windowMonthly": "este mês",
+    "windowYearly": "este ano"
   },
   "DashboardShell": {
     "loading": "Carregando..."

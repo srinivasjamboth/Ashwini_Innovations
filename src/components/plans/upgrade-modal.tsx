@@ -9,13 +9,24 @@
 // plan catalog FROM THE DATABASE (`/api/billing/plans` → the same rows
 // enforcement uses), keeps the Monthly/Yearly toggle, and shows the
 // correct button state per plan: Start free trial / Trial used /
-// Subscribe / Upgrade / Switch plan / Current plan / Renew.
+// Subscribe / Upgrade / Switch to yearly / Switch to monthly / Current
+// plan / Renew.
 //
-// Razorpay is intentionally deferred: the checkout call hits the wired
-// seam, which returns `gateway_not_configured` (503) until a gateway is
-// connected — so the button honestly tells the user payment isn't live
-// yet instead of faking success. The whole catalog/CTA surface is real;
-// only the money leg is stubbed.
+// Yearly (spec PART 3/4):
+//   · the card figures are the STORED per-cycle rows (`cardLimits`), the
+//     same overlay enforcement applies — nothing is multiplied here;
+//   · a plan with no yearly price row or no stored yearly figures is NOT
+//     offered yearly: it keeps its monthly offer and its button explains why,
+//     so the dialog never starts a checkout that cannot complete. A missing
+//     payment-provider configuration is a different thing entirely — it stops
+//     MONTHLY too — so it is answered when the button is clicked
+//     ("Online payment isn't set up yet"), not by disabling every card;
+//   · while a PAID yearly period runs, a downgrade (cheaper plan, or back
+//     to monthly) is refused with "Your yearly plan runs until <date>" —
+//     the same rule the checkout route enforces server-side;
+//   · checkout creates a Razorpay subscription and hands it to checkout.js.
+//     Activation still only happens on the verified webhook, so this dialog
+//     never claims a plan the gateway has not confirmed.
 // ============================================================
 
 import { useEffect, useMemo, useState } from "react";
@@ -30,9 +41,10 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { formatCurrency } from "@/lib/currency";
+import { formatCount, formatCurrency } from "@/lib/currency";
 import { UNLIMITED, type FeatureFlag, type LimitFeature } from "@/lib/plans/config";
-import type { PlanCard } from "@/lib/plans/catalog";
+import { cardLimits, cardLimitPeriods, type PlanCard } from "@/lib/plans/catalog";
+import { openRazorpaySubscription } from "@/lib/plans/gateway/razorpay-client";
 import type { BillingCycle, EnforcementResult } from "@/lib/plans/types";
 import { usePlan } from "@/hooks/use-plan";
 
@@ -79,6 +91,7 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
   const [plans, setPlans] = useState<PlanCard[] | null>(null);
   const [loadErr, setLoadErr] = useState(false);
   const [cycle, setCycle] = useState<BillingCycle>(snapshot?.cycle ?? "monthly");
+  const [yearlyOn, setYearlyOn] = useState(true);
   const [pendingPlan, setPendingPlan] = useState<string | null>(null);
   const [gatewayNote, setGatewayNote] = useState<string | null>(null);
 
@@ -92,8 +105,13 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
       try {
         const res = await fetch("/api/billing/plans", { cache: "default" });
         if (!res.ok) throw new Error(String(res.status));
-        const data = (await res.json()) as { plans: PlanCard[] };
-        if (alive) setPlans(data.plans);
+        const data = (await res.json()) as { plans: PlanCard[]; yearlyBilling?: boolean };
+        if (!alive) return;
+        setPlans(data.plans);
+        // The toggle mirrors the YEARLY_BILLING_ENABLED flag, nothing else —
+        // the same rule the landing page uses. Whether a PARTICULAR plan can
+        // be bought yearly is answered per card (see `buttonFor`).
+        setYearlyOn(data.yearlyBilling !== false);
       } catch {
         if (alive) setLoadErr(true);
       }
@@ -108,7 +126,21 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
     if (snapshot?.cycle) setCycle(snapshot.cycle);
   }, [snapshot?.cycle]);
 
+  // Never leave the dialog parked on a cycle that is not on offer.
+  useEffect(() => {
+    if (!yearlyOn && cycle !== "monthly") setCycle("monthly");
+  }, [yearlyOn, cycle]);
+
   const currentPlan = snapshot?.plan ?? null;
+
+  // A paid YEARLY period that is still running may not be traded down —
+  // the mirror of the server rule, so the dialog can explain it before the
+  // customer clicks (and the checkout route still refuses if they do).
+  const yearlyLock = useMemo(() => {
+    if (!snapshot || snapshot.effectiveStatus === "expired") return null;
+    if (snapshot.cycle !== "yearly" || snapshot.plan === "trial") return null;
+    return snapshot.periodEnd ?? null;
+  }, [snapshot]);
 
   const heading = useMemo(() => {
     const reason = ctx?.denial?.reason;
@@ -133,23 +165,55 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
     return t("expiredBody");
   }, [ctx, t]);
 
-  // Per-plan button state + action label.
-  const buttonFor = (plan: PlanCard): { label: string; disabled: boolean } => {
-    const isCurrent = plan.id === currentPlan;
-    if (isCurrent) {
-      // Current paid plan → "Renew"; current free trial → "Current plan".
-      if (snapshot?.effectiveStatus === "expired")
-        return { label: t("renew"), disabled: false };
-      return { label: t("currentPlan"), disabled: true };
-    }
+  // Per-plan button state + action label. The viewed `cycle` is part of the
+  // state: "Current plan" only when plan AND cycle both match, so the same
+  // plan on the other cycle offers the switch (spec PART 3).
+  const currentSort = plans?.find((p) => p.id === currentPlan)?.sort ?? 0;
+  const buttonFor = (
+    plan: PlanCard,
+  ): { label: string; disabled: boolean; blocked?: 'unavailable' | 'locked' } => {
     if (!plan.isPaid) {
-      // Trial plan. Offer only if no trial has been claimed yet.
-      if (snapshot?.trialClaimedAt)
-        return { label: t("trialUsed"), disabled: true };
+      // Trial plan. Offer only if no trial has been claimed yet. The trial
+      // has no yearly version, so the cycle never changes this button.
+      if (snapshot?.trialClaimedAt) return { label: t("trialUsed"), disabled: true };
       return { label: t("startTrial"), disabled: false };
     }
-    // Upgrade to something above the current tier, otherwise "Switch".
-    const currentSort = plans?.find((p) => p.id === currentPlan)?.sort ?? 0;
+
+    // "Current plan" states a fact about what the customer already holds, so
+    // it outranks the yearly-availability message: an account on an
+    // owner-granted yearly period must never be told its own plan "is not
+    // available". Expired is excluded — that card offers Renew instead.
+    if (
+      plan.id === currentPlan &&
+      snapshot?.cycle === cycle &&
+      snapshot.effectiveStatus !== "expired"
+    ) {
+      return { label: t("currentPlan"), disabled: true };
+    }
+
+    // Yearly not on offer for THIS plan → say so, and do not start a
+    // checkout that cannot complete.
+    if (cycle === "yearly" && !plan.yearlyAvailable) {
+      return { label: t("yearlyUnavailable"), disabled: true, blocked: "unavailable" };
+    }
+
+    const wouldDowngrade =
+      Boolean(yearlyLock) && (cycle === "monthly" || plan.sort < currentSort);
+
+    if (plan.id === currentPlan) {
+      if (snapshot?.effectiveStatus === "expired")
+        return { label: t("renew"), disabled: false };
+      if (wouldDowngrade) {
+        // Same plan, monthly after a paid year: blocked, but clickable so it
+        // can explain itself.
+        return { label: t("switchToMonthly"), disabled: false, blocked: "locked" };
+      }
+      return { label: t("switchToYearly"), disabled: false };
+    }
+
+    if (wouldDowngrade)
+      return { label: plan.sort > currentSort ? t("upgrade") : t("switchPlan"), disabled: false, blocked: "locked" };
+
     return {
       label: plan.sort > currentSort ? t("upgrade") : t("switchPlan"),
       disabled: false,
@@ -164,6 +228,19 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
       onClose();
       return;
     }
+
+    // Explain the yearly lock before spending a network call on a checkout
+    // the server would refuse anyway.
+    const btn = buttonFor(plan);
+    if (btn.blocked === "locked" && yearlyLock) {
+      setGatewayNote(
+        t("yearlyLocked", {
+          date: new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(yearlyLock)),
+        }),
+      );
+      return;
+    }
+
     setPendingPlan(plan.id);
     setGatewayNote(null);
     try {
@@ -171,16 +248,51 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan: plan.id, cycle }),
+        // `planId` is the documented key; the route also accepts the old
+        // `plan` spelling, but this dialog must not rely on that.
+        body: JSON.stringify({ planId: plan.id, cycle }),
       });
-      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      const body = (await res.json().catch(() => ({}))) as {
+        checkout_url?: string;
+        keyId?: string;
+        subscriptionId?: string;
+        error?: string;
+        blockedUntil?: string | null;
+      };
       if (res.ok && typeof body.checkout_url === "string") {
-        // Gateway wired later (Razorpay). Real checkouts redirect here.
-        window.location.href = body.checkout_url as string;
+        window.location.href = body.checkout_url;
         return;
       }
-      if (body.error === "gateway_not_configured" || res.status === 503) {
+      if (res.ok && body.keyId && body.subscriptionId) {
+        const result = await openRazorpaySubscription({
+          keyId: body.keyId,
+          subscriptionId: body.subscriptionId,
+        });
+        if (result) {
+          // Authorized. The plan flips when the verified webhook lands, which
+          // is normally a second later — poll the snapshot rather than
+          // claiming success here.
+          setGatewayNote(t("paymentProcessing"));
+          onRenewed();
+          window.setTimeout(onRenewed, 2500);
+          window.setTimeout(onRenewed, 6000);
+        } else {
+          setGatewayNote(t("checkoutCancelled"));
+        }
+        return;
+      }
+      if (body.error === "yearly_period_active") {
+        setGatewayNote(
+          t("yearlyLocked", {
+            date: body.blockedUntil
+              ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(body.blockedUntil))
+              : "—",
+          }),
+        );
+      } else if (body.error === "gateway_not_configured" || res.status === 503) {
         setGatewayNote(t("gatewayPending"));
+      } else if (body.error === "yearly_unavailable") {
+        setGatewayNote(t("yearlyUnavailable"));
       } else {
         setGatewayNote(t("checkoutError"));
       }
@@ -203,24 +315,34 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
         </DialogHeader>
 
         {/* Monthly / Yearly toggle — the same control the landing page
-            keeps, so pricing reads identically in-app and out. */}
-        <div className="inline-flex rounded-lg border border-border bg-muted p-1 text-sm">
-          {(["monthly", "yearly"] as BillingCycle[]).map((c) => (
-            <button
-              key={c}
-              type="button"
-              onClick={() => setCycle(c)}
-              aria-pressed={c === cycle}
-              className={`rounded-md px-3 py-1 font-medium transition ${
-                c === cycle
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {c === "monthly" ? t("monthly") : t("yearly")}
-            </button>
-          ))}
-        </div>
+            keeps, so pricing reads identically in-app and out. It follows the
+            YEARLY_BILLING_ENABLED flag only; a plan that cannot be bought
+            yearly yet is answered on its own card, not by hiding the
+            toggle. */}
+        {yearlyOn && (
+          <div className="inline-flex rounded-lg border border-border bg-muted p-1 text-sm">
+            {(["monthly", "yearly"] as BillingCycle[]).map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => {
+                  setCycle(c);
+                  // A message about the cycle you just left must not sit on
+                  // top of the one you are now looking at.
+                  setGatewayNote(null);
+                }}
+                aria-pressed={c === cycle}
+                className={`rounded-md px-3 py-1 font-medium transition ${
+                  c === cycle
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {c === "monthly" ? t("monthly") : t("yearly")}
+              </button>
+            ))}
+          </div>
+        )}
 
         {loadErr ? (
           <p className="text-sm text-muted-foreground">{t("catalogError")}</p>
@@ -234,7 +356,17 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {plans.map((plan) => {
               const btn = buttonFor(plan);
-              const price = plan.prices[cycle];
+              // The cycle this CARD actually renders. A plan that cannot be
+              // bought yearly (no yearly price row / no stored figures) or the
+              // free trial keeps its MONTHLY offer instead of printing "₹0/yr"
+              // under a disabled button.
+              const viewCycle: BillingCycle =
+                cycle === "yearly" && !plan.yearlyAvailable ? "monthly" : cycle;
+              const price = plan.prices[viewCycle];
+              // Figures come from the STORED row for this cycle (yearly rows
+              // when they exist, monthly otherwise) — never multiplied here.
+              const limits = cardLimits(plan, viewCycle);
+              const periods = cardLimitPeriods(plan, viewCycle);
               return (
                 <div
                   key={plan.id}
@@ -261,20 +393,20 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
                     </span>
                     {plan.isPaid && (
                       <span className="text-xs text-muted-foreground">
-                        {cycle === "monthly" ? t("perMonth") : t("perYear")}
+                        {viewCycle === "monthly" ? t("perMonth") : t("perYear")}
                       </span>
                     )}
                   </div>
 
                   <ul className="mt-3 flex-1 space-y-1 text-xs text-muted-foreground">
                     {LIMIT_KEYS.map((key) =>
-                      plan.limits[key] === undefined ? null : (
+                      limits[key] === undefined ? null : (
                         <li key={key} className="flex justify-between gap-2">
                           <span>{featureLabel(t, key)}</span>
                           <span className="font-medium text-foreground">
-                            {plan.limits[key] === UNLIMITED
+                            {limits[key] === UNLIMITED
                               ? t("unlimited")
-                              : formatLimit(plan.limits[key] as number)}
+                              : `${formatCount(limits[key] as number)}${periodSuffix(t, periods[key])}`}
                           </span>
                         </li>
                       )
@@ -315,8 +447,17 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
 
 // ---- helpers ----------------------------------------------------------
 
-function formatLimit(n: number): string {
-  return n.toLocaleString();
+// The window a figure is measured over, read from the row's own stored
+// period: a yearly bulk quota says "/year", a monthly one "/month", a
+// whole-plan/whole-trial figure says nothing. Data-driven, so a later
+// period change in the DB re-labels the card without a code edit.
+function periodSuffix(
+  t: ReturnType<typeof useTranslations>,
+  period: string | undefined
+): string {
+  if (period === "yearly") return t("perYear");
+  if (period === "monthly") return t("perMonth");
+  return "";
 }
 
 // Resolve a feature/limit key to its translated label, falling back to a
