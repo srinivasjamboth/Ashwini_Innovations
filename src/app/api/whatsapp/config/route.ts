@@ -471,29 +471,40 @@ export async function POST(request: Request) {
     // is not a failure, just an incomplete-but-valid save.
     let registrationSkipped = false
 
-    const needsRegistration = !sameNumber || (typeof pin === 'string' && pin.length > 0)
+    // Attempt /register on every fresh connect or number switch, WITH
+    // or WITHOUT a PIN. Registering the number to THIS app is what
+    // flips it from "Pending" to "Connected" and authorises this app's
+    // token to SEND from it — skipping it whenever no PIN was supplied
+    // left Embedded-Signup numbers unregistered, so every send failed
+    // with #133010.
+    //
+    // Meta's new account model deprecates the 6-digit PIN for eligible
+    // Cloud API numbers, and Meta test numbers are pre-registered, so a
+    // PIN-less register succeeds for both. Only legacy numbers still
+    // demand a PIN; when one rejects the PIN-less attempt we treat it
+    // as a soft "skipped" (save as connected, registered_at null, show
+    // the "add a PIN" banner) rather than a hard failure — preserving
+    // prior behaviour for the only numbers it still applies to
+    // (issues #242 / #136).
+    const suppliedPin = typeof pin === 'string' && pin.length > 0 ? pin : undefined
+    const needsRegistration = !sameNumber || suppliedPin != null
     if (needsRegistration) {
-      if (!pin) {
-        // No PIN provided. Meta TEST numbers (Developer Console) are
-        // pre-registered by Meta and expose no two-step verification
-        // PIN to set, so requiring one made them impossible to connect
-        // (issue #242). The /register + PIN step only matters for
-        // production numbers under a shared WABA (issue #136), so treat
-        // it as best-effort: skip it, save the (already Meta-verified)
-        // credentials as connected, and leave registered_at null. The
-        // UI surfaces a separate "Not registered" banner with a path to
-        // add a PIN later for users who do need inbound webhook routing.
-        registrationSkipped = true
-      } else {
-        try {
-          await registerPhoneNumber({
-            phoneNumberId: phone_number_id,
-            accessToken: access_token,
-            pin,
-          })
-          registeredAt = new Date().toISOString()
-        } catch (err) {
-          const explained = explainMetaError(err, 'register', metaCtx)
+      try {
+        await registerPhoneNumber({
+          phoneNumberId: phone_number_id,
+          accessToken: access_token,
+          pin: suppliedPin,
+        })
+        registeredAt = new Date().toISOString()
+      } catch (err) {
+        const explained = explainMetaError(err, 'register', metaCtx)
+        if (!suppliedPin) {
+          registrationSkipped = true
+          console.warn(
+            'Phone number /register (PIN-less) rejected; saving as connected but not registered:',
+            explained.metaMessage,
+          )
+        } else {
           registrationError = explained.summary
           registrationMeta = metaErrorPayload(explained)
           console.error('Phone number /register failed:', explained.metaMessage, registrationMeta)

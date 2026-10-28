@@ -78,17 +78,24 @@ interface UseBroadcastSendingReturn {
 }
 
 /**
- * Meta rate-limit buffer. 10 per batch + 1 s pause matches the spec
- * and keeps us comfortably under Meta's per-phone-number messaging
- * rate so a large broadcast never trips the upstream limiter.
+ * Meta rate-limit buffer. 10 per batch + 3 s pause keeps us comfortably
+ * under Meta's per-phone-number messaging rate so a large broadcast never
+ * trips the upstream limiter (130429).
+ *
+ * The 3 s is the same number as DEFAULT_SEND_PACING_MS in
+ * /api/whatsapp/broadcast, so the two ends of a Send Now campaign agree:
+ * the route spaces the recipients INSIDE a batch, this gap spaces the
+ * batches themselves. A campaign therefore runs at roughly one send per
+ * 3 s whether the operator is watching the tab or not.
  *
  * Note this shape when touching `RATE_LIMITS.broadcast`: a campaign is
  * many calls to `/api/whatsapp/broadcast`, not one. A 1 000-recipient
- * send is ~100 calls over several minutes, and a bucket sized for
- * "one call per campaign" throttles most of it away (issue #472).
+ * send is ~100 calls, and a bucket sized for "one call per campaign"
+ * throttles most of it away (issue #472). Paced this way those calls land
+ * ~32 s apart, so the bucket is nowhere near its 60/min budget.
  */
 const SEND_BATCH_SIZE = 10;
-const SEND_BATCH_DELAY_MS = 1000;
+const SEND_BATCH_DELAY_MS = 3000;
 
 /** `broadcast_recipients` inserts are independent of the send rate. */
 const INSERT_BATCH_SIZE = 200;

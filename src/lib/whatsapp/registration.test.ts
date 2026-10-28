@@ -46,6 +46,21 @@ describe('registerPhoneNumber', () => {
     });
   });
 
+  it('omits pin from the body for a PIN-less register (new account model)', async () => {
+    // Meta's new account model deprecates the 6-digit PIN for eligible
+    // Cloud API numbers, and Embedded Signup never supplies one — the
+    // register call must go out WITHOUT a pin field so the number can
+    // flip Pending -> Connected and start sending.
+    const result = await registerPhoneNumber({
+      phoneNumberId: 'PNID_9',
+      accessToken: 'tok',
+    });
+    expect(result).toEqual({ success: true, alreadyRegistered: false });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toContain('/PNID_9/register');
+    expect(JSON.parse(init.body)).toEqual({ messaging_product: 'whatsapp' });
+  });
+
   it('treats "already registered" as success (idempotent re-save)', async () => {
     // This is the silent-failure case we're guarding against — Meta
     // returns 400 + "Phone number is already registered" when the

@@ -254,9 +254,13 @@ export async function debugTokenScopes(
 // required:
 //
 //   POST /{phone_number_id}/register
-//     Subscribes the number for THIS app's webhook. Requires a
-//     6-digit 2FA PIN the user previously set in Meta WhatsApp
-//     Manager → Two-step verification. Without /register, inbound
+//     Subscribes the number for THIS app's webhook AND is what makes
+//     the number "Connected" so this app can SEND from it (an
+//     unregistered number fails every send with #133010). A 6-digit
+//     2FA PIN is OPTIONAL: Meta's new account model deprecates it for
+//     eligible Cloud API numbers, and Meta test numbers are
+//     pre-registered, so a PIN-less register succeeds for both. Only
+//     legacy numbers still require one. Without /register, inbound
 //     events are routed to whichever app last claimed the number
 //     (often the one that did Embedded Signup) — so a second user
 //     adding a second number under the same WABA silently loses
@@ -274,12 +278,14 @@ export interface RegisterPhoneNumberArgs {
   phoneNumberId: string
   accessToken: string
   /**
-   * 6-digit PIN the user set in Meta WhatsApp Manager →
-   * Two-step verification. If 2FA is not enabled on the number,
-   * Meta rejects /register with a clear error and the user is
-   * pointed at the right setting in the UI.
+   * Optional 6-digit PIN the user set in Meta WhatsApp Manager →
+   * Two-step verification. Omitted from the request when undefined:
+   * Meta's new account model deprecates the PIN for eligible Cloud
+   * API numbers (and Meta test numbers are pre-registered), so those
+   * register without one. Legacy numbers that still demand a PIN
+   * reject a PIN-less call with a clear error the caller surfaces.
    */
-  pin: string
+  pin?: string
 }
 
 export interface RegisterPhoneNumberResult {
@@ -305,13 +311,19 @@ export async function registerPhoneNumber(
 ): Promise<RegisterPhoneNumberResult> {
   const { phoneNumberId, accessToken, pin } = args
   const url = `${META_API_BASE}/${phoneNumberId}/register`
+  // Only include `pin` when one was supplied — a PIN-less register is
+  // the correct call for Meta's new account model and test numbers.
+  const payload: { messaging_product: string; pin?: string } = {
+    messaging_product: 'whatsapp',
+  }
+  if (pin) payload.pin = pin
   const response = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${accessToken}`,
     },
-    body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
+    body: JSON.stringify(payload),
   })
 
   if (response.ok) {
