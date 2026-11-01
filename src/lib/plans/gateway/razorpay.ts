@@ -245,6 +245,166 @@ export async function cancelGatewaySubscription(
 /** Razorpay subscription states that cannot charge again. */
 const TERMINAL_SUBSCRIPTION_STATUSES = new Set(['cancelled', 'completed', 'expired', 'halted']);
 
+/* ==================================================================
+ * ORDERS API (spec PART 3) — the current checkout model.
+ *
+ * One-off Orders (not the older Subscriptions objects above, which stay
+ * untouched so any legacy recurring customer is unaffected). The model:
+ *   - checkout creates a Razorpay Order at the STORED rupee price ×100
+ *     (paise only for this one API frame — the DB never holds a float),
+ *     records it in `payment_orders`, and hands the order id to
+ *     checkout.js. The customer pays; nothing is trusted from the browser.
+ *   - activation requires EITHER a verified `razorpay_signature` on the
+ *     browser `handler` result (HMAC of `order_id|payment_id` with the
+ *     key SECRET, timing-safe) confirmed against the gateway's live
+ *     payment state, OR a verified `order.paid` webhook. Both funnel
+ *     through the one idempotent fulfilment in the billing engine.
+ * ================================================================== */
+
+/** Amounts at the gateway are the smallest unit (paise). Rupees → paise,
+ *  rounding a Numeral that the DB stores as NUMERIC(12,2). Integer maths
+ *  only — never a floating rupee value crosses this boundary. */
+export function rupeesToPaise(rupees: number): number {
+  const paise = Math.round(Number(rupees) * 100);
+  if (!Number.isFinite(paise) || paise <= 0) {
+    throw new Error(`rupeesToPaise: bad amount ${rupees}`);
+  }
+  return paise;
+}
+
+export interface RazorpayOrderEntity {
+  id: string;
+  entity?: string;
+  amount?: number;
+  amount_paid?: number;
+  amount_due?: number;
+  currency?: string;
+  status?: string;
+  receipt?: string;
+  created_at?: number;
+}
+
+export interface RazorpayPaymentEntity {
+  id: string;
+  entity?: string;
+  order_id?: string;
+  status?: string; // created | authorized | captured | failed
+  method?: string; // upi | card | netbanking | wallet
+  amount?: number;
+  amount_paid?: number;
+  currency?: string;
+  error_description?: string;
+  error_code?: string;
+  created_at?: number;
+}
+
+/** Razorpay payment states that mean "money is settled, activate". */
+const PAID_PAYMENT_STATUSES = new Set(['captured']);
+/** Authorized but not yet captured — needs a capture call (or the
+ *  dashboard's automatic capture setting). */
+const AUTHORIZED_PAYMENT_STATUSES = new Set(['authorized']);
+
+/**
+ * Verify the browser checkout handler's signature: HMAC-SHA256 of
+ * `order_id|payment_id` keyed with RAZORPAY_KEY_SECRET, compared in
+ * constant time. The order id MUST be the one stored server-side, not
+ * whatever the browser sent. A missing secret or signature is a rejection.
+ */
+export function verifyPaymentSignature(
+  razorpayOrderId: string,
+  razorpayPaymentId: string,
+  signature: string | null | undefined,
+): boolean {
+  const secret = process.env.RAZORPAY_KEY_SECRET?.trim();
+  if (!secret || !razorpayOrderId || !razorpayPaymentId || !signature) return false;
+  const expected = createHmac('sha256', secret)
+    .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+    .digest('hex');
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Create a Razorpay Order at the stored rupee price (converted to paise
+ * here and only here). `receipt` is the reconciliation tag shown on
+ * Razorpay's reports — kept under 40 characters by the caller. `notes`
+ * carry account / plan / cycle so a webhook can be attributed even if it
+ * arrives before the browser calls verify; they are reconciliation-only
+ * and are NEVER trusted for pricing or tenancy decisions.
+ */
+export async function createRazorpayOrder(args: {
+  amountRupees: number;
+  currency: string;
+  receipt: string;
+  notes: { account_id: string; plan_id: string; billing_cycle: string };
+}): Promise<RazorpayOrderEntity> {
+  const res = await call<RazorpayOrderEntity>('POST', '/orders', {
+    amount: rupeesToPaise(args.amountRupees),
+    currency: args.currency,
+    receipt: args.receipt,
+    notes: args.notes,
+  });
+  if (!res.ok) throw new Error(`create order failed (${res.status}): ${res.message}`);
+  if (!res.data.id) throw new Error('create order: gateway returned no id');
+  return res.data;
+}
+
+/** Fetch an order — trust the gateway's view over any client claim. */
+export async function fetchRazorpayOrder(orderId: string): Promise<RazorpayOrderEntity | null> {
+  if (!orderId) return null;
+  const res = await call<RazorpayOrderEntity>('GET', `/orders/${orderId}`);
+  return res.ok ? res.data : null;
+}
+
+/** Fetch a payment entity (status / method / error) for verification. */
+export async function fetchRazorpayPayment(paymentId: string): Promise<RazorpayPaymentEntity | null> {
+  if (!paymentId) return null;
+  const res = await call<RazorpayPaymentEntity>('GET', `/payments/${paymentId}`);
+  return res.ok ? res.data : null;
+}
+
+/**
+ * Capture an authorized payment (amount in PAISE). Returns false when the
+ * gateway rejects it; the caller must not activate on a failed capture.
+ * With automatic capture enabled in the dashboard this is rarely needed —
+ * kept so an authorized card payment can still settle without it.
+ */
+export async function capturePayment(
+  paymentId: string,
+  amountPaise: number,
+  currency: string,
+): Promise<{ captured: boolean; error?: string }> {
+  const res = await call<RazorpayPaymentEntity>('POST', `/payments/${paymentId}/capture`, {
+    amount: amountPaise,
+    currency,
+  });
+  if (!res.ok) return { captured: false, error: `(${res.status}) ${res.message}` };
+  return { captured: res.data.status === 'captured' };
+}
+
+/**
+ * Classify a live payment for the fulfilment decision. Only `captured`
+ * (or an authorized payment we successfully capture) counts as paid, and
+ * the caller separately asserts the gateway amount + currency match the
+ * stored order before activating.
+ */
+export function paymentSettled(payment: RazorpayPaymentEntity | null): boolean {
+  return Boolean(payment && PAID_PAYMENT_STATUSES.has(payment.status ?? ''));
+}
+
+export function paymentNeedsCapture(payment: RazorpayPaymentEntity | null): boolean {
+  return Boolean(payment && AUTHORIZED_PAYMENT_STATUSES.has(payment.status ?? ''));
+}
+
+/** The gateway's own order status for "paid" (used by reconciliation). */
+export function orderFullyPaid(order: RazorpayOrderEntity | null): boolean {
+  if (!order) return false;
+  const amount = Number(order.amount ?? 0);
+  const paid = Number(order.amount_paid ?? 0);
+  return amount > 0 && paid >= amount;
+}
+
 /**
  * Persist a gateway plan id on its price row, so `plan_prices` stays the
  * single source of truth (cards read availability from it, checkout reads

@@ -6,6 +6,8 @@ import {
   replaceSteps,
   type BuilderStepInput,
 } from '@/lib/automations/steps-tree'
+import { loadGraph, loadGraphOrDecompile } from '@/lib/automations/graph-store'
+import { blockingOnly, validateGraphConfig } from '@/lib/automations/graph'
 import {
   validateStepsForActivation,
   validateTriggerForActivation,
@@ -56,7 +58,12 @@ export async function GET(
   if (!automation) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   const steps = await loadStepsTree(id)
-  return NextResponse.json({ automation, steps })
+  // Canvas graph rows. Automations authored before the graph builder
+  // have no rows yet — decompile their step tree on read so the
+  // canvas can open any automation (migration 055 backfills the
+  // tables; this keeps working either way).
+  const graph = await loadGraphOrDecompile(id, steps)
+  return NextResponse.json({ automation, steps, nodes: graph.nodes, edges: graph.edges })
 }
 
 export async function PATCH(
@@ -108,26 +115,51 @@ export async function PATCH(
   // activating it OR editing an already-active one), validate the
   // merged configuration first. Activation is the natural gate — drafts
   // are still allowed to be incomplete.
+  //
+  // Graph-authored automations validate the NODE/EDGE graph (per-node
+  // required config + both condition handles wired + structural
+  // integrity) — itemized per node. The compiled step tree is a
+  // build artifact there, so a legacy `steps` body is ignored once a
+  // graph exists; pre-canvas automations keep the old step-tree gate.
+  // (Raw table read — no decompile fallback here, so a legacy
+  // automation with an empty graph table still takes the steps path.)
+  const { nodes: graphNodes, edges: graphEdges } = await loadGraph(id)
   const willBeActive =
     typeof update.is_active === 'boolean' ? update.is_active : existing.is_active
   if (willBeActive) {
     const mergedTriggerType = (update.trigger_type ?? existing.trigger_type) as string
     const mergedTriggerConfig = update.trigger_config ?? existing.trigger_config
-    const mergedSteps = Array.isArray(body.steps)
-      ? (body.steps as { step_type: string; step_config: Record<string, unknown> }[])
-      : await loadStepsTree(id)
-    const issues = [
-      ...validateTriggerForActivation(mergedTriggerType, mergedTriggerConfig),
-      ...validateStepsForActivation(mergedSteps),
-    ]
-    if (issues.length > 0) {
-      return NextResponse.json(
-        {
-          error: 'Cannot keep automation active with invalid configuration',
-          issues,
-        },
-        { status: 400 },
-      )
+    if (graphNodes.length > 0) {
+      const issues = blockingOnly([
+        ...validateTriggerForActivation(mergedTriggerType, mergedTriggerConfig),
+        ...validateGraphConfig(graphNodes, graphEdges),
+      ])
+      if (issues.length > 0) {
+        return NextResponse.json(
+          {
+            error: 'Cannot keep automation active with invalid configuration',
+            issues,
+          },
+          { status: 400 },
+        )
+      }
+    } else {
+      const mergedSteps = Array.isArray(body.steps)
+        ? (body.steps as { step_type: string; step_config: Record<string, unknown> }[])
+        : await loadStepsTree(id)
+      const issues = blockingOnly([
+        ...validateTriggerForActivation(mergedTriggerType, mergedTriggerConfig),
+        ...validateStepsForActivation(mergedSteps),
+      ])
+      if (issues.length > 0) {
+        return NextResponse.json(
+          {
+            error: 'Cannot keep automation active with invalid configuration',
+            issues,
+          },
+          { status: 400 },
+        )
+      }
     }
   }
 
@@ -140,7 +172,7 @@ export async function PATCH(
     if (updErr) return NextResponse.json({ error: updErr.message }, { status: 500 })
   }
 
-  if (Array.isArray(body.steps)) {
+  if (Array.isArray(body.steps) && graphNodes.length === 0) {
     const err = await replaceSteps(id, body.steps as BuilderStepInput[])
     if (err) return NextResponse.json({ error: err }, { status: 500 })
   }

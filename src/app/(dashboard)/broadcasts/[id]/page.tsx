@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Broadcast, BroadcastRecipient, RecipientStatus } from '@/types';
@@ -173,6 +173,14 @@ export default function BroadcastDetailPage() {
   const [resumingScope, setResumingScope] = useState<
     'pending' | 'failed' | null
   >(null);
+  // True while a self-continuing resume chain is driving the campaign to
+  // completion on the server. Kept separate from resumingScope so the UI
+  // can say "resuming automatically" rather than a single one-shot.
+  const [autoRunning, setAutoRunning] = useState(false);
+  // Re-entrancy guards: only one chain at a time, and the wizard's
+  // ?autostart=1 kick-off fires exactly once per mount.
+  const autoChainRef = useRef(false);
+  const autostartFiredRef = useRef(false);
   // ---- Scheduling controls (scheduled broadcasts only) ----
   const [showReschedule, setShowReschedule] = useState(false);
   const [resDate, setResDate] = useState('');
@@ -248,53 +256,140 @@ export default function BroadcastDetailPage() {
   }
 
   /**
-   * Hand the leftovers to the server (issue #472).
+   * Hand the leftovers to the server (issue #472) and keep handing them
+   * until the campaign is done.
    *
-   * The wizard's send loop lives in the tab that started the campaign,
-   * so navigating away strands the rest as 'pending' with the broadcast
-   * stuck 'sending'. This is the recovery, and the same call retries
-   * failed recipients.
+   * The wizard's send loop used to live in the tab that started the
+   * campaign, so navigating away stranded the rest as 'pending'. The
+   * recovery endpoint delivers one capped pass per call; a single click
+   * therefore only ever finished a slice of a large, paced campaign (≈15
+   * recipients with a 3 s delay), forcing the operator to click Resume
+   * over and over. This chains the passes: fire one, wait for its
+   * server-side lock to release, fire the next — until the endpoint
+   * reports no backlog left. The claim lock (delivery_locked_at) makes
+   * overlapping passes impossible, so no recipient is ever double-sent.
    */
-  async function handleResume(scope: 'pending' | 'failed') {
-    setResumingScope(scope);
-    try {
-      const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}/resume`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope }),
-      });
-      const payload = await res.json().catch(() => ({}));
+  const RESUME_POLL_MS = 2000;
+  const RESUME_PASS_TIMEOUT_MS = 7 * 60 * 1000;
+  const RESUME_MAX_PASSES = 1000;
 
-      if (!res.ok) {
-        toast.error(
-          t('toastResumeFailed', {
-            error: payload?.error || `HTTP ${res.status}`,
-          }),
-        );
-        return;
-      }
+  function sleep(ms: number) {
+    return new Promise<void>((resolve) => setTimeout(resolve, ms));
+  }
 
-      toast.success(
-        payload.remaining > 0
-          ? t('toastResumeStartedCapped', {
-              count: payload.resuming,
-              remaining: payload.remaining,
-            })
-          : t('toastResumeStarted', { count: payload.resuming }),
-      );
-      // Delivery runs server-side after the 202, so the counts here are
-      // a snapshot — reload to pick up the first of it.
+  /**
+   * Wait for the running server pass to release the delivery lock —
+   * `after()` clears `delivery_locked_at` in its finally. Refreshes the
+   * page counts as it polls so the operator watches progress rather than a
+   * frozen screen. Returns when the lock is clear or the per-pass ceiling
+   * is hit (so a wedged pass can't hang the chain forever).
+   */
+  async function waitUntilPassSettles(supabase: ReturnType<typeof createClient>) {
+    // The route claims the lock before it returns 202; a short beat lets
+    // that write land before we start polling it.
+    await sleep(500);
+    const start = Date.now();
+    while (Date.now() - start < RESUME_PASS_TIMEOUT_MS) {
+      const { data } = await supabase
+        .from('broadcasts')
+        .select('delivery_locked_at')
+        .eq('id', broadcastId)
+        .single();
+      if (!data?.delivery_locked_at) return;
       await fetchData();
-    } catch (err) {
-      toast.error(
-        t('toastResumeFailed', {
-          error: err instanceof Error ? err.message : 'Unknown error',
-        }),
-      );
-    } finally {
-      setResumingScope(null);
+      await sleep(RESUME_POLL_MS);
     }
   }
+
+  const runResumeChain = useCallback(
+    async (scope: 'pending' | 'failed') => {
+      if (autoChainRef.current) return;
+      autoChainRef.current = true;
+      setAutoRunning(true);
+      setResumingScope(scope);
+      const supabase = createClient();
+      let passes = 0;
+      try {
+        while (passes < RESUME_MAX_PASSES) {
+          passes++;
+          const res = await fetch(
+            `/api/whatsapp/broadcast/${broadcastId}/resume`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ scope }),
+            },
+          );
+          const payload = await res.json().catch(() => ({}));
+
+          if (res.status === 409) {
+            // A scheduler tick or a previous chain owns the lock. Wait it
+            // out and retry the same pass instead of surfacing an error.
+            await waitUntilPassSettles(supabase);
+            continue;
+          }
+          if (!res.ok) {
+            toast.error(
+              t('toastResumeFailed', {
+                error: payload?.error || `HTTP ${res.status}`,
+              }),
+            );
+            break;
+          }
+
+          // Delivery fans out server-side after the 202; let this pass
+          // settle before queueing the next so the claim is never raced.
+          await waitUntilPassSettles(supabase);
+          await fetchData();
+
+          // `remaining` is the backlog beyond THIS pass's cap. 0 means this
+          // pass covered every sendable recipient — nothing left to chain.
+          if ((payload.remaining ?? 0) <= 0) {
+            toast.success(t('toastResumeAllDone'));
+            break;
+          }
+        }
+      } finally {
+        autoChainRef.current = false;
+        setAutoRunning(false);
+        setResumingScope(null);
+        await fetchData();
+      }
+    },
+    // waitUntilPassSettles/sleep are stable per-render helpers; fetchData +
+    // ids are the real dependencies.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [broadcastId, fetchData, t],
+  );
+
+  function handleResume(scope: 'pending' | 'failed') {
+    void runResumeChain(scope);
+  }
+
+  // Kick off delivery automatically when arriving straight from the wizard
+  // (?autostart=1). The send was made server-resumable there; this drives
+  // it to completion here without another click. Fires once per mount, and
+  // only for a genuinely in-flight, unlocked send-now campaign — never a
+  // scheduled one, and never one another pass already holds.
+  useEffect(() => {
+    if (loading || !broadcast || autostartFiredRef.current) return;
+    if (typeof window === 'undefined') return;
+    if (new URLSearchParams(window.location.search).get('autostart') !== '1') {
+      return;
+    }
+    autostartFiredRef.current = true;
+    const pendingHere = recipients.some((r) => r.status === 'pending');
+    if (
+      broadcast.status === 'sending' &&
+      !broadcast.delivery_locked_at &&
+      pendingHere
+    ) {
+      // Defer off the synchronous effect path so the chain's first setState
+      // isn't flagged as set-state-in-effect.
+      const id = setTimeout(() => void runResumeChain('pending'), 0);
+      return () => clearTimeout(id);
+    }
+  }, [loading, broadcast, recipients, runResumeChain]);
 
   async function handleDelete() {
     setDeleting(true);
@@ -620,7 +715,9 @@ export default function BroadcastDetailPage() {
               {isStalled ? t('resumeStalledTitle') : t('resumeTitle')}
             </p>
             <p className="mt-0.5 text-muted-foreground">
-              {isStalled
+              {autoRunning && resumingScope === 'pending'
+                ? t('autoResumeRunning')
+                : isStalled
                 ? t('resumeStalledHint', { count: pendingCount })
                 : t('resumeHint', { count: retryableCount })}
             </p>
@@ -637,7 +734,9 @@ export default function BroadcastDetailPage() {
                 ) : (
                   <PlayCircle className="h-3.5 w-3.5" />
                 )}
-                {t('resumePending', { count: pendingCount })}
+                {autoRunning && resumingScope === 'pending'
+                  ? t('autoResumeRunning')
+                  : t('resumePending', { count: pendingCount })}
               </Button>
             )}
             {retryableCount > 0 && (

@@ -249,7 +249,12 @@ export function TemplatePicker({
             )}
           </div>
         ) : (
-          <div className="space-y-3">
+          /* Same scroll contract as the list view above: the detail body
+           * is capped and scrolls on its own, so long templates stay
+           * readable and the Back/Send footer remains pinned. Without
+           * this the fixed-center dialog grows past the viewport and the
+           * tail of the preview is unreachable. */
+          <div className="max-h-[60vh] space-y-3 overflow-y-auto">
             <div className="rounded-md border border-border bg-background/50 p-3">
               <p className="mb-1 text-xs text-muted-foreground">{t("preview")}</p>
               <p className="whitespace-pre-wrap text-sm text-popover-foreground">

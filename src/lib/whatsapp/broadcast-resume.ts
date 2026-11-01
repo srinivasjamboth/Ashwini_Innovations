@@ -52,7 +52,7 @@ export const RESUME_MAX_PER_REQUEST = 1000;
  * Resume click. `EST_SEND_MS` is a conservative allowance for the Meta
  * round-trip itself on top of the configured delay.
  */
-const RESUME_PASS_WALL_BUDGET_MS = 55_000;
+const RESUME_PASS_WALL_BUDGET_MS = 120_000;
 const EST_SEND_MS = 500;
 
 /**
@@ -175,7 +175,9 @@ export async function planBroadcastResume(
 ): Promise<ResumePlan> {
   const { data: broadcast, error: bcError } = await db
     .from('broadcasts')
-    .select('id, user_id, template_name, template_language, send_delay_ms')
+    .select(
+      'id, user_id, template_name, template_language, send_delay_ms, header_media_url',
+    )
     .eq('id', broadcastId)
     .eq('account_id', accountId)
     .maybeSingle();
@@ -265,6 +267,15 @@ export async function planBroadcastResume(
     );
   }
 
+  // Media-header campaigns carry a run-time header URL on the broadcast
+  // row (migration 051, same column the scheduler cron reads). Fold it
+  // into every planned recipient so an initial send handed to this path
+  // — and any later Resume — fires the header faithfully rather than
+  // falling back to the template's stored URL. Absent → omit, so the
+  // send builder uses the template default (unchanged for text headers).
+  const headerOverride = (broadcast as { header_media_url?: string | null })
+    .header_media_url ?? null;
+
   const plan: BroadcastPlan = {
     broadcastId,
     accountId,
@@ -284,6 +295,9 @@ export async function planBroadcastResume(
       params: Array.isArray(row.template_params)
         ? row.template_params.filter((p): p is string => typeof p === 'string')
         : [],
+      ...(headerOverride
+        ? { messageParams: { headerMediaUrl: headerOverride } }
+        : {}),
     })),
     rejected: 0,
   };

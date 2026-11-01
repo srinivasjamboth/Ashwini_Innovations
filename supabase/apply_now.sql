@@ -1313,6 +1313,55 @@ ALTER TABLE public.subscription_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.admin_action_log     ENABLE ROW LEVEL SECURITY;
 
 
+-- ============================================================
+-- 054_billing_orders.sql — Razorpay ORDERS checkout
+-- (payment_orders + razorpay_webhook_events). Additive, idempotent.
+-- Amounts stored in RUPEES NUMERIC(12,2), same unit as plan_prices.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS public.payment_orders (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES public.accounts(id) ON DELETE CASCADE,
+  user_id UUID,
+  plan_id TEXT REFERENCES public.plans(id),
+  plan_name_snapshot TEXT,
+  billing_cycle TEXT NOT NULL CHECK (billing_cycle IN ('monthly', 'yearly')),
+  amount NUMERIC(12, 2) NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'INR',
+  razorpay_order_id TEXT NOT NULL UNIQUE,
+  razorpay_payment_id TEXT UNIQUE,
+  receipt TEXT,
+  status TEXT NOT NULL DEFAULT 'created' CHECK (status IN (
+    'created', 'attempted', 'paid', 'failed', 'cancelled'
+  )),
+  payment_method TEXT CHECK (payment_method IN ('upi', 'card', 'netbanking', 'wallet')),
+  failure_reason TEXT,
+  fulfilled_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS payment_orders_account_created_idx
+  ON public.payment_orders(account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS payment_orders_reconcile_idx
+  ON public.payment_orders(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS payment_orders_status_idx
+  ON public.payment_orders(status);
+
+DROP TRIGGER IF EXISTS set_updated_at ON public.payment_orders;
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.payment_orders
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TABLE IF NOT EXISTS public.razorpay_webhook_events (
+  event_id TEXT PRIMARY KEY,
+  event_type TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.payment_orders          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.razorpay_webhook_events ENABLE ROW LEVEL SECURITY;
+
+
 -- ===== applied-check: every object this script must leave behind =====
 SELECT 'functions' AS what, string_agg(proname, ', ' ORDER BY proname) AS present
 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -1327,6 +1376,11 @@ FROM pg_trigger t JOIN pg_class c ON c.oid = t.indrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname IN ('public','auth') AND NOT t.tginternal AND t.tgname IN (
   'set_updated_at','contacts_insert_guard','tags_insert_guard','custom_fields_insert_guard',
-  'on_auth_user_created','on_auth_user_trial','admin_action_log_no_mutation','subscriptions_history_trigger');
+  'on_auth_user_created','on_auth_user_trial','admin_action_log_no_mutation','subscriptions_history_trigger')
+UNION ALL
+SELECT 'tables', string_agg(c.relname, ', ' ORDER BY c.relname)
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname IN (
+  'payment_orders','razorpay_webhook_events');
 
 NOTIFY pgrst, 'reload schema';

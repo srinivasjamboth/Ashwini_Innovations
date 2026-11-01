@@ -12,6 +12,9 @@ import type {
   SendListStepConfig,
   SendTemplateStepConfig,
   SendWebhookStepConfig,
+  SendMediaStepConfig,
+  SendFlowStepConfig,
+  CaptureReplyStepConfig,
   TagStepConfig,
   UpdateContactFieldStepConfig,
   WaitStepConfig,
@@ -21,9 +24,27 @@ import type {
 import { supabaseAdmin } from './admin-client'
 import { addContactTagIfAbsent } from '@/lib/contacts/tag-write'
 import { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from '@/lib/contacts/tag-chain'
-import { engineSendText, engineSendTemplate, engineSendInteractive } from './meta-send'
+import { engineSendText, engineSendTemplate, engineSendInteractive, engineSendMedia, engineSendFlow } from './meta-send'
+import { firstScreenIdOf } from '@/lib/whatsapp/flow-json'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
+import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder'
+
+/**
+ * `automation_pending_executions.kind` marker for Ask-a-Question runs
+ * parked on `capture_reply`. The row's `context.vars[WAIT_REPLY_MARKER]`
+ * carries the variable name the inbound answer gets stored under; the
+ * webhook's resume path deletes the marker before continuing. Cron only
+ * drains `kind='timer'` rows, so these never fire on the clock.
+ */
+const WAIT_REPLY_MARKER = '_wait_reply'
+
+/**
+ * How long a parked Ask-a-Question run stays resumable. Deliberately
+ * far past any practical reply window; an unanswered prompt simply
+ * stays `pending` and is superseded the next time the trigger fires.
+ */
+const WAIT_REPLY_TTL_MS = 30 * 86_400_000
 
 // ------------------------------------------------------------
 // Public API
@@ -199,6 +220,92 @@ export async function resumePendingExecution(pending: {
 // Internal execution
 // ------------------------------------------------------------
 
+/**
+ * Claim a pending row with a conditional update — the same two-step
+ * lock the cron endpoint uses, so an overlapping invocation (or the
+ * webhook racing a due timer) never double-resumes a run.
+ */
+async function claimPending(id: string): Promise<boolean> {
+  const { data: claimed } = await supabaseAdmin()
+    .from('automation_pending_executions')
+    .update({ status: 'running' })
+    .eq('id', id)
+    .eq('status', 'pending')
+    .select('id')
+    .maybeSingle()
+  return Boolean(claimed)
+}
+
+/**
+ * Feed an inbound text reply into any Ask-a-Question runs parked on
+ * this contact: store the answer under the captured variable, then
+ * resume each run. Called from the inbound webhook after the
+ * automation triggers fire.
+ *
+ * Must never throw — the webhook awaits it inside `after()`.
+ * Button/list taps are excluded by the caller (a tap is not a typed
+ * answer); interactive-form completions arrive on a different webhook.
+ */
+export async function resumeWaitRepliesForContact(input: {
+  accountId: string
+  contactId: string
+  messageText: string
+}): Promise<void> {
+  try {
+    const db = supabaseAdmin()
+    // kind + status filters keep timer rows and already-running rows
+    // out; account scoping guards the service-role read. A contact
+    // with several parked runs gets all of them resumed — each run
+    // captures into its own context.
+    const { data: rows, error } = await db
+      .from('automation_pending_executions')
+      .select('*')
+      .eq('account_id', input.accountId)
+      .eq('contact_id', input.contactId)
+      .eq('kind', 'wait_reply')
+      .eq('status', 'pending')
+      .order('run_at', { ascending: true })
+      .limit(10)
+    if (error) {
+      console.error('[automations] wait_reply fetch failed:', error)
+      return
+    }
+
+    for (const row of rows ?? []) {
+      if (!(await claimPending(row.id as string))) continue
+
+      const context = ((row.context as AutomationContext | null) ?? {}) as AutomationContext
+      const vars = { ...(context.vars ?? {}) }
+      const marker = vars[WAIT_REPLY_MARKER]
+      delete vars[WAIT_REPLY_MARKER]
+      // The question node's variable name; `reply` is the fallback for
+      // rows compiled before variables were required.
+      const variable = typeof marker === 'string' && marker.trim() ? marker.trim() : 'reply'
+      context.vars = { ...vars, [variable]: input.messageText }
+
+      try {
+        await resumePendingExecution({
+          id: row.id as string,
+          automation_id: row.automation_id as string,
+          account_id: row.account_id as string,
+          user_id: row.user_id as string,
+          contact_id: (row.contact_id as string | null) ?? null,
+          log_id: (row.log_id as string | null) ?? null,
+          parent_step_id: (row.parent_step_id as string | null) ?? null,
+          branch: (row.branch as 'yes' | 'no' | null) ?? null,
+          next_step_position: row.next_step_position as number,
+          context,
+        })
+      } catch (err) {
+        console.error('[automations] wait_reply resume failed:', err)
+        await markPending(row.id as string, 'failed')
+      }
+    }
+  } catch (err) {
+    console.error('[automations] wait_reply dispatch failed:', err)
+  }
+}
+
 async function executeAutomation(automation: Automation, input: DispatchInput) {
   const db = supabaseAdmin()
 
@@ -318,6 +425,8 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
         context: args.context,
         run_at: new Date(Date.now() + ms).toISOString(),
         status: 'pending',
+        // Explicit post-055: cron only drains timer rows.
+        kind: 'timer',
       })
       results.push({
         step_id: step.id,
@@ -350,6 +459,57 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
           logId: args.logId,
         })
         continue
+      }
+
+      // `capture_reply` (Ask a Question) is the second suspension
+      // point: send the question, park the run on a `wait_reply`
+      // pending row, and stop processing this scope. The inbound
+      // webhook resumes it via `resumeWaitRepliesForContact` — cron
+      // never drains these rows (it filters kind='timer').
+      if (step.step_type === 'capture_reply') {
+        const cfg = step.step_config as CaptureReplyStepConfig
+        if (!args.contactId) throw new Error('capture_reply needs a contact')
+        const text = interpolate(cfg.text ?? '', args)
+        if (!text.trim()) throw new Error('capture_reply has empty question text')
+        const conversationId = await resolveConversationId(args)
+        const { whatsapp_message_id } = await engineSendText({
+          accountId: args.automation.account_id,
+          userId: args.automation.user_id,
+          conversationId,
+          contactId: args.contactId,
+          text,
+        })
+        await db.from('automation_pending_executions').insert({
+          automation_id: args.automation.id,
+          account_id: args.automation.account_id,
+          user_id: args.automation.user_id,
+          contact_id: args.contactId,
+          log_id: args.logId,
+          parent_step_id: args.parentStepId,
+          branch: args.branch,
+          next_step_position: step.position + 1,
+          context: {
+            ...args.context,
+            vars: {
+              ...(args.context.vars ?? {}),
+              [WAIT_REPLY_MARKER]: cfg.variable || 'reply',
+            },
+          },
+          // run_at only orders rows within the kind='wait_reply' set;
+          // no clock ever fires it.
+          run_at: new Date(Date.now() + WAIT_REPLY_TTL_MS).toISOString(),
+          status: 'pending',
+          kind: 'wait_reply',
+        })
+        results.push({
+          step_id: step.id,
+          step_type: step.step_type,
+          status: 'success',
+          detail: `question sent (${whatsapp_message_id}); awaiting reply`,
+        })
+        status = 'partial'
+        await appendResults(args.logId, results, status, errorMessage)
+        return
       }
 
       const detail = await runStep(step, args)
@@ -426,24 +586,46 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       if (!args.contactId) throw new Error('send_template needs a contact')
       if (!cfg.template_name) throw new Error('send_template needs template_name')
       const conversationId = await resolveConversationId(args)
+
+      // Per-contact values: every param may embed `{{ vars.x }}` /
+      // `{{ message.text }}`, resolved exactly like send_message text.
+      const fill = (v: string) => interpolate(v, args)
+
       // Meta templates use positional {{1}}, {{2}}, … placeholders, so
-      // we MUST emit params in strict numeric order. Lexicographic sort
-      // of "1", "2", …, "10" yields "1", "10", "2", … which silently
-      // scrambles every template with ≥10 variables.
-      const params = cfg.variables
-        ? Object.keys(cfg.variables)
-            .sort((a, b) => {
-              const na = Number(a)
-              const nb = Number(b)
-              const aNum = Number.isFinite(na)
-              const bNum = Number.isFinite(nb)
-              if (aNum && bNum) return na - nb
-              if (aNum) return -1
-              if (bNum) return 1
-              return a.localeCompare(b)
-            })
-            .map((k) => String(cfg.variables![k]))
-        : []
+      // body values MUST stay in strict numeric order. The legacy
+      // `variables` map (keyed "1", "2", …) is sorted numerically — a
+      // lexicographic sort of "1", "2", …, "10" scrambles any template
+      // with ≥10 variables. New authoring writes the `body` array directly.
+      let body: string[] | undefined
+      if (Array.isArray(cfg.body)) {
+        body = cfg.body.map(fill)
+      } else if (cfg.variables) {
+        body = Object.keys(cfg.variables)
+          .sort((a, b) => {
+            const na = Number(a)
+            const nb = Number(b)
+            const aNum = Number.isFinite(na)
+            const bNum = Number.isFinite(nb)
+            if (aNum && bNum) return na - nb
+            if (aNum) return -1
+            if (bNum) return 1
+            return a.localeCompare(b)
+          })
+          .map((k) => fill(String(cfg.variables![k])))
+      }
+
+      const buttonParams = cfg.buttonParams
+        ? Object.fromEntries(
+            Object.entries(cfg.buttonParams).map(([k, v]) => [Number(k), fill(String(v))]),
+          )
+        : undefined
+
+      const messageParams: SendTimeParams = {
+        body,
+        headerText: cfg.headerText ? fill(cfg.headerText) : undefined,
+        buttonParams,
+      }
+
       const { whatsapp_message_id } = await engineSendTemplate({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
@@ -451,9 +633,63 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         contactId: args.contactId,
         templateName: cfg.template_name,
         language: cfg.language,
-        params,
+        params: body,
+        messageParams,
       })
       return `template sent via Meta (${whatsapp_message_id})`
+    }
+
+    case 'send_media': {
+      const cfg = step.step_config as SendMediaStepConfig
+      if (!args.contactId) throw new Error('send_media needs a contact')
+      if (!cfg.link) throw new Error('send_media needs a media link')
+      const kind = cfg.kind === 'audio' || cfg.kind === 'video' || cfg.kind === 'document' ? cfg.kind : 'image'
+      const conversationId = await resolveConversationId(args)
+      const { whatsapp_message_id } = await engineSendMedia({
+        accountId: args.automation.account_id,
+        userId: args.automation.user_id,
+        conversationId,
+        contactId: args.contactId,
+        kind,
+        link: cfg.link,
+        // Interpolated like send_message text; Meta drops caption on
+        // audio itself (sendMediaMessage strips it before the call).
+        caption: cfg.caption ? interpolate(cfg.caption, args) : undefined,
+        filename: cfg.filename,
+      })
+      return `${kind} sent via Meta (${whatsapp_message_id})`
+    }
+
+    case 'send_flow': {
+      const cfg = step.step_config as SendFlowStepConfig
+      if (!args.contactId) throw new Error('send_flow needs a contact')
+      if (!cfg.flow_id) throw new Error('send_flow needs flow_id')
+      // Resolve the form through the account so a forged/config-stale
+      // id can't send another tenant's Flow. Only published rows with a
+      // Meta id are sendable — same filter as the authoring dropdown.
+      const { data: form, error: formErr } = await db
+        .from('whatsapp_flows')
+        .select('id, name, meta_flow_id, flow_json')
+        .eq('id', cfg.flow_id)
+        .eq('account_id', args.automation.account_id)
+        .eq('status', 'published')
+        .maybeSingle()
+      if (formErr) throw new Error(`flow lookup failed: ${formErr.message}`)
+      if (!form?.meta_flow_id) throw new Error('send_flow: published form not found')
+      const firstScreen = firstScreenIdOf(
+        (form.flow_json as { screens?: unknown } | null)?.screens,
+      )
+      const conversationId = await resolveConversationId(args)
+      const { whatsapp_message_id } = await engineSendFlow({
+        accountId: args.automation.account_id,
+        userId: args.automation.user_id,
+        conversationId,
+        contactId: args.contactId,
+        name: form.meta_flow_id as string,
+        firstScreenId: firstScreen ?? undefined,
+        bodyText: `📋 ${form.name ?? 'Form'}`,
+      })
+      return `form sent via Meta (${whatsapp_message_id})`
     }
 
     case 'add_tag': {
@@ -620,17 +856,24 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       if (!(await isDeliverableUrl(cfg.url))) {
         throw new Error('send_webhook: destination not allowed')
       }
-      const body = cfg.body_template ? interpolate(cfg.body_template, args) : JSON.stringify(args.context)
-      const res = await fetch(cfg.url, {
-        method: 'POST',
+      // Method comes from the node config; legacy steps stored before
+      // the method field existed keep their POST-only behaviour.
+      const method = (cfg.method ?? 'POST').toUpperCase()
+      const init: RequestInit = {
+        method,
         headers: { 'content-type': 'application/json', ...(cfg.headers ?? {}) },
-        body,
         // Do NOT follow redirects — a public URL could 3xx-bounce to an
         // internal address, defeating the guard above. Bound the request
         // so a hung/slow internal host can't tie up the runner.
         redirect: 'manual',
         signal: AbortSignal.timeout(10_000),
-      })
+      }
+      if (method !== 'GET' && method !== 'HEAD') {
+        init.body = cfg.body_template
+          ? interpolate(cfg.body_template, args)
+          : JSON.stringify(args.context)
+      }
+      const res = await fetch(cfg.url, init)
       if (!res.ok) throw new Error(`webhook returned ${res.status}`)
       return `webhook ${res.status}`
     }
@@ -644,6 +887,19 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         .eq('contact_id', args.contactId)
       return 'conversation closed'
     }
+
+    // Palette nodes without a live integration yet. Authoring +
+    // validation + persistence are complete; the chain simply continues
+    // past them, with the log carrying why. Replace these arms with real
+    // sends once the integrations land.
+    case 'google_sheet':
+      return 'skipped: no Google Sheet integration configured'
+
+    case 'meta_capi':
+      return 'skipped: no Meta Conversion API integration configured'
+
+    case 'noop':
+      return 'no-op'
 
     default:
       return `unknown step: ${step.step_type}`

@@ -15,10 +15,14 @@ import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 // surface at save time.
 // ------------------------------------------------------------
 
+export type IssueSeverity = 'error' | 'warning'
+
 export interface ValidationIssue {
   /** Dot-path for the UI to highlight; stable enough to build a table. */
   path: string
   message: string
+  /** Undefined means a blocking error. Warnings are advisory only. */
+  severity?: IssueSeverity
 }
 
 interface StepLike {
@@ -49,6 +53,21 @@ function walk(steps: StepLike[], prefix: string, issues: ValidationIssue[]): voi
       if (s.branches.no) walk(s.branches.no, `${path}.no.`, issues)
     }
   })
+}
+
+/**
+ * Expose the per-step invariants for the graph builder's legacy
+ * passthrough nodes — same rules, so a pre-canvas automation can't
+ * activate from the canvas with a config the vertical builder rejects
+ * (or vice versa). The graph layer re-prefixes the returned leaf path.
+ */
+export function validateLegacyStepConfig(
+  stepType: string,
+  config: Record<string, unknown>,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = []
+  validateOne({ step_type: stepType, step_config: config ?? {} }, '', issues)
+  return issues
 }
 
 function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): void {
@@ -145,6 +164,48 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
       break
     case 'close_conversation':
       // No config required.
+      break
+    // ------------------------------------------------------------
+    // Step types produced by the graph compiler (055). Drafts keep
+    // their blanks until activation, same as everything above.
+    // ------------------------------------------------------------
+    case 'send_media':
+      if (!nonEmpty(c.link)) {
+        issues.push({ path: `${path}.link`, message: 'media file is required' })
+      }
+      if (!['image', 'video', 'audio', 'document'].includes(String(c.kind))) {
+        issues.push({
+          path: `${path}.kind`,
+          message: 'media kind must be image, video, audio, or document',
+        })
+      }
+      break
+    case 'capture_reply':
+      if (!nonEmpty(c.text)) {
+        issues.push({ path: `${path}.text`, message: 'question text is required' })
+      }
+      if (!nonEmpty(c.variable)) {
+        issues.push({ path: `${path}.variable`, message: 'variable name is required' })
+      }
+      break
+    case 'send_flow':
+      if (!nonEmpty(c.flow_id)) {
+        issues.push({ path: `${path}.flow_id`, message: 'form is required' })
+      }
+      break
+    case 'google_sheet':
+      if (!nonEmpty(c.spreadsheet)) {
+        issues.push({ path: `${path}.spreadsheet`, message: 'spreadsheet is required' })
+      }
+      break
+    case 'meta_capi':
+      if (!nonEmpty(c.event_type)) {
+        issues.push({ path: `${path}.event_type`, message: 'event type is required' })
+      }
+      break
+    case 'noop':
+      // Compile-time placeholder for stray starting nodes; never sent
+      // to activation without going through the graph validator first.
       break
     default:
       issues.push({ path, message: `unknown step type: ${step.step_type}` })

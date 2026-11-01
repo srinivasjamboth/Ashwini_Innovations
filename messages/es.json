@@ -758,6 +758,8 @@
       "toastResumeStarted": "Enviando a {count} destinatarios en segundo plano.",
       "toastResumeStartedCapped": "Enviando a {count} destinatarios en segundo plano. Otros {remaining} necesitarán otra ejecución.",
       "toastResumeFailed": "No se pudo reanudar: {error}",
+      "autoResumeRunning": "Se está reanudando automáticamente hasta procesar todos los destinatarios…",
+      "toastResumeAllDone": "Difusión terminada: todos los destinatarios se procesaron desde el servidor.",
       "scheduledFor": "Programada para enviar",
       "reschedule": "Reprogramar",
       "cancelSchedule": "Cancelar programacion",
@@ -1047,10 +1049,69 @@
       "saveDraft": "Guardar borrador",
       "untitled": "Automatización sin título",
       "backToAutomations": "Volver a automatizaciones",
+      "publish": {
+        "button": "Publicar",
+        "test": "Probar",
+        "saveDraftFirst": "Guarda el borrador antes de publicar",
+        "errorsTitle": "{count} error(es) bloqueante(s) — corrígelos para publicar",
+        "warningsTitle": "{count} advertencia(s) — revísalas antes de publicar",
+        "close": "Descartar",
+        "back": "Volver a editar",
+        "publishAnyway": "Publicar de todos modos",
+        "reveal": "Mostrar nodo"
+      },
+      "test": {
+        "banner": "Modo de prueba — no se envían mensajes reales",
+        "reset": "Reiniciar",
+        "title": "Probar este flujo",
+        "subtitle": "Recorrido simulado del grafo guardado",
+        "close": "Cerrar",
+        "conditionSource": "Datos de condición",
+        "manual": "Manual",
+        "realContact": "Contacto real",
+        "pickContact": "Elige un contacto…",
+        "loading": "Cargando…",
+        "contactTags": "{count} etiqueta(s) en este contacto",
+        "manualHint": "Activa etiquetas y define valores de campo usados por los nodos de condición.",
+        "fieldValue": "valor",
+        "fieldName": "campo (p. ej. city)",
+        "addField": "Añadir",
+        "entryHint": "Escribe un mensaje para ver si activa este flujo y observa su ejecución.",
+        "entryPlaceholder": "Escribe un mensaje de prueba…",
+        "send": "Enviar",
+        "notTriggered": "Este mensaje no activaría este flujo ({reason}).",
+        "triggered": "Disparador coincidió — {reason}",
+        "noStart": "Este flujo no tiene un nodo de Paso inicial.",
+        "endedMissing": "El flujo terminó: falta un nodo conectado.",
+        "endedBranch": "El flujo terminó aquí: la rama \"{branch}\" no está conectada.",
+        "endedHere": "El flujo terminó aquí.",
+        "endedGuard": "El flujo terminó: se alcanzó el límite de pasos (posible bucle).",
+        "endedMarker": "— fin del flujo —",
+        "formSkipped": "(no envió el formulario)",
+        "formPending": "Esperando a que el contacto envíe el formulario.",
+        "runAgain": "Ejecutar de nuevo",
+        "tapPrompt": "Toca una opción para continuar:",
+        "answerPlaceholderVar": "Escribe una respuesta para “{variable}”…",
+        "answerPlaceholder": "Escribe una respuesta…",
+        "formSubmitted": "(envió el formulario)",
+        "formSubmit": "Enviar formulario",
+        "formDontSubmit": "No enviar",
+        "askBadge": "Pregunta",
+        "emptyText": "(vacío)",
+        "document": "Documento",
+        "noMedia": "Sin medio subido",
+        "noAudio": "Sin audio subido",
+        "templateBadge": "Plantilla",
+        "formBadge": "Formulario de WhatsApp",
+        "formTapHint": "Toca para abrir el formulario",
+        "paymentText": "Pago solicitado: {amount} {currency}"
+      },
       "toasts": {
         "saved": "Automatización guardada",
         "created": "Automatización creada",
-        "saveFailed": "Error al guardar"
+        "saveFailed": "Error al guardar",
+        "published": "Flujo publicado — ya está activo",
+        "publishFailed": "No se pudo publicar este flujo"
       },
       "tags": {
         "select": "Selecciona una etiqueta…",
@@ -1141,7 +1202,140 @@
         "matchWord": "Palabra completa",
         "matchWordHint": "Coincide con la palabra clave solo como palabra independiente, así \"k\" ya no se activa con \"thanks\". Ideal para palabras clave cortas en idiomas con espacios; usa Contiene para idiomas que se escriben sin espacios.",
         "matchExact": "Exacta",
-        "closeConversationHint": "Cambia el estado de la conversación a \"cerrada\". No requiere configuración."
+        "closeConversationHint": "Cambia el estado de la conversación a \"cerrada\". No requiere configuración.",
+        "variablesLabel": "Variables (JSON)",
+        "questionLabel": "Pregunta",
+        "placeholderQuestion": "¿Cómo te llamas?",
+        "variableLabel": "Guardar la respuesta en una variable",
+        "variablePlaceholder": "p. ej. nombre, email",
+        "variableHelp": "Usa después {{ vars.x }} en cualquier mensaje.",
+        "currencyLabel": "Moneda",
+        "descriptionLabel": "Descripción",
+        "placeholderDescription": "Pedido #1234",
+        "paymentHint": "WhatsApp no tiene un mensaje de pago nativo — esto envía el importe, la moneda y la descripción como un mensaje de texto.",
+        "spreadsheetLabel": "Hoja de cálculo",
+        "placeholderSpreadsheet": "Nombre o ID de la hoja",
+        "mappingLabel": "Mapeo de columnas",
+        "columnLabel": "Columna",
+        "googleSheetHint": "Aún no hay integración con Google Sheets — la configuración se guarda y el paso se registra como omitido al ejecutarse.",
+        "eventTypeLabel": "Tipo de evento",
+        "customDataLabel": "Datos personalizados",
+        "keyLabel": "Clave",
+        "addRow": "Añadir fila",
+        "methodLabel": "Método",
+        "mediaKindLabel": "Tipo de medio",
+        "kinds": {
+          "image": "Imagen",
+          "video": "Vídeo",
+          "document": "Documento"
+        },
+        "captionLabel": "Pie de foto",
+        "placeholderCaption": "Pie de foto opcional…",
+        "filenameLabel": "Nombre de archivo",
+        "flowLabel": "Formulario de WhatsApp",
+        "flowIdPlaceholder": "ID del flujo",
+        "noPublishedFlows": "No se encontraron flujos publicados — publica primero uno en el módulo de WhatsApp Flows.",
+        "selectFlow": "Selecciona un flujo…",
+        "unknownFlow": "{id} (flujo desconocido)",
+        "flowHelp": "Envía el flujo publicado como un mensaje de formulario.",
+        "noTemplates": "No se encontraron plantillas aprobadas — crea y aprueba una en la página de Plantillas primero.",
+        "noTemplateVars": "Esta plantilla no tiene variables que completar.",
+        "varValuePlaceholder": "Valor, o {{ vars.name }} para cada contacto",
+        "templateVarsHint": "Escribe un valor fijo, o inserta una variable como {{ vars.name }} / {{ message.text }} para que cada contacto reciba el suyo.",
+        "previewLabel": "Vista previa"
+      },
+      "nodeTypes": {
+        "starting_step": {
+          "label": "Paso inicial",
+          "description": "Lo que activa esta automatización."
+        },
+        "text_button": {
+          "label": "Texto + Botón",
+          "description": "Envía un mensaje con hasta 3 botones pulsables."
+        },
+        "media": {
+          "label": "Medio",
+          "description": "Envía una imagen, un vídeo o un documento."
+        },
+        "audio": {
+          "label": "Audio",
+          "description": "Envía una nota de voz o un clip de audio."
+        },
+        "list": {
+          "label": "Lista",
+          "description": "Envía un mensaje con un menú de lista."
+        },
+        "template": {
+          "label": "Plantilla",
+          "description": "Envía una plantilla de WhatsApp preaprobada."
+        },
+        "ask_question": {
+          "label": "Hacer una pregunta",
+          "description": "Preguntar algo y guardar la respuesta en una variable."
+        },
+        "whatsapp_form": {
+          "label": "Formulario de WhatsApp",
+          "description": "Envía un Flow publicado de WhatsApp para entrada estructurada."
+        },
+        "payment": {
+          "label": "Pago",
+          "description": "Solicita un importe con un resumen en texto."
+        },
+        "save_attribute": {
+          "label": "Guardar atributo",
+          "description": "Almacena un valor en el contacto."
+        },
+        "add_tag": {
+          "label": "Añadir etiqueta",
+          "description": "Etiqueta al contacto."
+        },
+        "google_sheet": {
+          "label": "Google Sheet",
+          "description": "Añade los datos de la ejecución a una hoja de cálculo."
+        },
+        "meta_capi": {
+          "label": "Meta Conversion API",
+          "description": "Envía un evento de conversión a Meta."
+        },
+        "time_delay": {
+          "label": "Espera",
+          "description": "Espera antes de continuar el flujo."
+        },
+        "webhook": {
+          "label": "Webhook",
+          "description": "Llama a una URL externa."
+        },
+        "condition": {
+          "label": "Condición",
+          "description": "Deriva el flujo según una prueba Sí / No."
+        }
+      },
+      "selectAction": {
+        "title": "Seleccionar acción",
+        "tabMessages": "Mensajes",
+        "tabActions": "Acciones"
+      },
+      "canvas": {
+        "hint": "Arrastra desde el punto de un nodo hacia un lienzo vacío para añadir el siguiente paso.",
+        "syncError": "No se pudo guardar el cambio",
+        "loopError": "Esa conexión crearía un bucle",
+        "startingStepLocked": "El paso inicial no se puede eliminar",
+        "noBodyYet": "sin texto aún",
+        "noTextYet": "sin texto aún",
+        "noFileYet": "sin archivo aún",
+        "pickTemplate": "elige una plantilla",
+        "pickFlow": "elige un flujo",
+        "pickField": "elige un campo",
+        "pickTag": "elige una etiqueta",
+        "notConfigured": "sin configurar",
+        "noUrl": "sin url",
+        "whenPrefix": "cuando",
+        "upload": "Subir archivo",
+        "uploading": "Subiendo…",
+        "uploaded": "Archivo subido",
+        "uploadFailed": "Error al subir",
+        "fileTooLarge": "El archivo supera el límite de {max} MB",
+        "conditionHint": "Conecta las ramas Sí y No antes de activar."
       }
     }
   },
@@ -2268,6 +2462,13 @@
     "yearlyLocked": "Tu plan anual está vigente hasta {date}.",
     "paymentProcessing": "Pago autorizado - activando tu plan ahora.",
     "checkoutCancelled": "Se canceló el pago. No se ha realizado ningún cargo.",
+    "confirming": "Confirmando tu pago...",
+    "paymentSuccess": "Pago exitoso. Tu plan {plan} ({cycle}) está vigente hasta {date}.",
+    "paymentNotCharged": "El pago falló. No se te ha cobrado.",
+    "checkoutClosed": "Se cerró el pago antes de que terminara. No se ha realizado ningún cargo - puedes intentarlo de nuevo.",
+    "paymentReconcile": "Si se deductó dinero, tu plan se activará automáticamente en unos minutos. Contacta al soporte con tu ID de pago {paymentId}.",
+    "paymentReconcileNoId": "Si se deductó dinero, tu plan se activará automáticamente en unos minutos. Contacta al soporte si no lo hace.",
+    "retryPayment": "Intentar de nuevo",
     "limits": {
       "contacts": "Contactos",
       "bulk_messages": "Mensajes masivos",
@@ -2310,7 +2511,13 @@
     "amount": "Importe",
     "status": "Estado",
     "windowMonthly": "este mes",
-    "windowYearly": "este ano"
+    "windowYearly": "este ano",
+    "featuresTitle": "Lo que incluye tu plan",
+    "colMethod": "Método",
+    "colPaymentId": "ID de pago",
+    "checkoutSuccess": "Pago exitoso - tu plan está activo.",
+    "checkoutPending": "Confirmando tu pago. Si se deductó dinero, tu plan se activará automáticamente en unos minutos.",
+    "checkoutFailed": "El pago falló. No se te ha cobrado - puedes intentarlo de nuevo."
   },
   "DashboardShell": {
     "loading": "Cargando..."

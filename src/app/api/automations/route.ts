@@ -5,10 +5,17 @@ import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { checkLimit } from '@/lib/plans/entitlements'
 import { getTemplate } from '@/lib/automations/templates'
 import { insertSteps, type BuilderStepInput } from '@/lib/automations/steps-tree'
+import { blockingOnly, compileGraphToSteps, validateGraphConfig } from '@/lib/automations/graph'
+import { insertGraph } from '@/lib/automations/graph-store'
+import type { AutomationEdgeRow, AutomationNodeRow } from '@/lib/automations/graph-types'
 import {
   validateStepsForActivation,
   validateTriggerForActivation,
 } from '@/lib/automations/validate'
+import {
+  collectPublishIssues,
+  splitPublishIssues,
+} from '@/lib/automations/publish-validation'
 
 export async function GET() {
   const supabase = await createClient()
@@ -60,7 +67,26 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => null)
   if (!body) return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
 
-  const { name, description, trigger_type, trigger_config, is_active, steps, template } = body
+  const { name, description, trigger_type, trigger_config, is_active, steps, template, graph, publish, confirmWarnings } = body
+
+  // Canvas create path: the graph draft is authoritative — it is
+  // persisted to automation_nodes/edges and compiled down to the
+  // automation_steps tree the engine runs. `steps` stays supported
+  // for the legacy template-seed + vertical-builder payloads.
+  const graphDraft: { nodes: AutomationNodeRow[]; edges: AutomationEdgeRow[] } | null =
+    graph && Array.isArray(graph.nodes) && graph.nodes.length > 0
+      ? {
+          nodes: graph.nodes as AutomationNodeRow[],
+          // Synthetic monotonic created_at preserves the authored
+          // sibling order (insertGraph applies the same clock below).
+          edges: (Array.isArray(graph.edges) ? graph.edges : []).map(
+            (e: AutomationEdgeRow, i: number) => ({
+              ...e,
+              created_at: new Date(Date.now() + i).toISOString(),
+            }),
+          ),
+        }
+      : null
 
   let effectiveSteps: BuilderStepInput[] | undefined = steps
   let effectiveName = name
@@ -90,17 +116,73 @@ export async function POST(request: Request) {
   const limit = await checkLimit(accountId, 'automation_flows')
   if (!limit.allowed) return NextResponse.json(limit, { status: 403 })
 
-  // Block activation of a clearly broken automation up-front instead of
-  // letting every trigger silently produce a failed log row. Drafts
-  // (is_active=false) are allowed to be incomplete so users can save
-  // progress mid-build.
-  if (is_active) {
-    const issues = [
+  const admin = supabaseAdmin()
+  const wantsPublish = publish === true
+
+  // Create-and-publish — the new-automation Publish button. Validate the
+  // in-memory graph through the SAME gate the standalone publish route
+  // uses, and only write the row once it is publishable. Errors or
+  // unacknowledged warnings return WITHOUT creating anything, so a failed
+  // Publish never leaves an orphan draft and a retry can't duplicate the
+  // automation. The client sends the graph authoritatively, so publishing
+  // a brand-new flow is a single round-trip.
+  if (wantsPublish) {
+    if (!graphDraft) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'Add at least one step before publishing',
+          errors: [
+            { path: 'graph', message: 'Add at least one step before publishing', severity: 'error' },
+          ],
+          warnings: [],
+        },
+        { status: 422 },
+      )
+    }
+    let issues
+    try {
+      issues = await collectPublishIssues({
+        admin,
+        accountId,
+        triggerType: effectiveTriggerType,
+        triggerConfig: effectiveTriggerConfig ?? {},
+        nodes: graphDraft.nodes,
+        edges: graphDraft.edges,
+      })
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : 'validation failed' },
+        { status: 500 },
+      )
+    }
+    const { errors, warnings } = splitPublishIssues(issues)
+    if (errors.length > 0) {
+      return NextResponse.json(
+        { ok: false, error: 'Fix the errors below before publishing', errors, warnings },
+        { status: 422 },
+      )
+    }
+    if (warnings.length > 0 && confirmWarnings !== true) {
+      return NextResponse.json({
+        ok: false,
+        needsConfirmation: true,
+        errors: [],
+        warnings,
+      })
+    }
+  } else if (is_active) {
+    // Plain activation (Active toggle / save-as-active): the lighter
+    // static-only gate. Drafts (is_active=false) stay allowed to be
+    // incomplete so users can save progress mid-build.
+    const issues = blockingOnly([
       ...validateTriggerForActivation(effectiveTriggerType, effectiveTriggerConfig ?? {}),
-      ...validateStepsForActivation(
-        (effectiveSteps ?? []) as unknown as { step_type: string; step_config: Record<string, unknown> }[],
-      ),
-    ]
+      ...(graphDraft
+        ? validateGraphConfig(graphDraft.nodes, graphDraft.edges)
+        : validateStepsForActivation(
+            (effectiveSteps ?? []) as unknown as { step_type: string; step_config: Record<string, unknown> }[],
+          )),
+    ])
     if (issues.length > 0) {
       return NextResponse.json(
         { error: 'Cannot activate automation with invalid configuration', issues },
@@ -109,7 +191,6 @@ export async function POST(request: Request) {
     }
   }
 
-  const admin = supabaseAdmin()
   const { data: automation, error: insertErr } = await admin
     .from('automations')
     .insert({
@@ -119,7 +200,7 @@ export async function POST(request: Request) {
       description: effectiveDescription ?? null,
       trigger_type: effectiveTriggerType,
       trigger_config: effectiveTriggerConfig ?? {},
-      is_active: !!is_active,
+      is_active: wantsPublish ? true : !!is_active,
     })
     .select()
     .single()
@@ -131,10 +212,21 @@ export async function POST(request: Request) {
     )
   }
 
-  if (effectiveSteps && effectiveSteps.length > 0) {
+  if (graphDraft) {
+    const graphErr = await insertGraph(automation.id, accountId, {
+      nodes: graphDraft.nodes,
+      edges: graphDraft.edges,
+    })
+    if (graphErr) return NextResponse.json({ error: graphErr }, { status: 500 })
+    const err = await insertSteps(automation.id, compileGraphToSteps(graphDraft.nodes, graphDraft.edges))
+    if (err) return NextResponse.json({ error: err }, { status: 500 })
+  } else if (effectiveSteps && effectiveSteps.length > 0) {
     const err = await insertSteps(automation.id, effectiveSteps)
     if (err) return NextResponse.json({ error: err }, { status: 500 })
   }
 
+  if (wantsPublish) {
+    return NextResponse.json({ ok: true, automation, errors: [], warnings: [] }, { status: 201 })
+  }
   return NextResponse.json({ automation }, { status: 201 })
 }

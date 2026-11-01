@@ -24,8 +24,10 @@
 //   · while a PAID yearly period runs, a downgrade (cheaper plan, or back
 //     to monthly) is refused with "Your yearly plan runs until <date>" —
 //     the same rule the checkout route enforces server-side;
-//   · checkout creates a Razorpay subscription and hands it to checkout.js.
-//     Activation still only happens on the verified webhook, so this dialog
+//   · checkout calls the ONE shared `startCheckout` (Orders model, UPI-ready):
+//     the server creates/reuses an order at the STORED price, opens
+//     checkout.js, and activation still only happens on the verified
+//     signature + gateway confirmation (or the webhook), so this dialog
 //     never claims a plan the gateway has not confirmed.
 // ============================================================
 
@@ -44,9 +46,10 @@ import { Badge } from "@/components/ui/badge";
 import { formatCount, formatCurrency } from "@/lib/currency";
 import { UNLIMITED, type FeatureFlag, type LimitFeature } from "@/lib/plans/config";
 import { cardLimits, cardLimitPeriods, type PlanCard } from "@/lib/plans/catalog";
-import { openRazorpaySubscription } from "@/lib/plans/gateway/razorpay-client";
 import type { BillingCycle, EnforcementResult } from "@/lib/plans/types";
+import type { CheckoutOutcome } from "@/lib/plans/checkout-client";
 import { usePlan } from "@/hooks/use-plan";
+import { useCheckout } from "@/hooks/use-checkout";
 
 export interface UpgradeContext {
   /** The denial that opened the modal, if any. */
@@ -94,6 +97,10 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
   const [yearlyOn, setYearlyOn] = useState(true);
   const [pendingPlan, setPendingPlan] = useState<string | null>(null);
   const [gatewayNote, setGatewayNote] = useState<string | null>(null);
+  // ONE shared Orders checkout flow (spec PART 4) — the same startCheckout
+  // the billing tab and landing surface use, so create-order → sheet →
+  // verify → poll logic can never diverge between them.
+  const { startCheckout, busy } = useCheckout();
 
   // Fetch the catalog lazily, only when the dialog opens, and keep it for
   // subsequent opens within the session (it changes only when the seed
@@ -228,83 +235,56 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
       onClose();
       return;
     }
-
+  
     // Explain the yearly lock before spending a network call on a checkout
     // the server would refuse anyway.
     const btn = buttonFor(plan);
     if (btn.blocked === "locked" && yearlyLock) {
-      setGatewayNote(
-        t("yearlyLocked", {
-          date: new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(yearlyLock)),
-        }),
-      );
+      setGatewayNote(t("yearlyLocked", { date: fmtDate(yearlyLock) }));
       return;
     }
-
+  
     setPendingPlan(plan.id);
-    setGatewayNote(null);
+    setGatewayNote(t("confirming"));
     try {
-      const res = await fetch("/api/billing/checkout", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        // `planId` is the documented key; the route also accepts the old
-        // `plan` spelling, but this dialog must not rely on that.
-        body: JSON.stringify({ planId: plan.id, cycle }),
-      });
-      const body = (await res.json().catch(() => ({}))) as {
-        checkout_url?: string;
-        keyId?: string;
-        subscriptionId?: string;
-        error?: string;
-        blockedUntil?: string | null;
-      };
-      if (res.ok && typeof body.checkout_url === "string") {
-        window.location.href = body.checkout_url;
-        return;
-      }
-      if (res.ok && body.keyId && body.subscriptionId) {
-        const result = await openRazorpaySubscription({
-          keyId: body.keyId,
-          subscriptionId: body.subscriptionId,
-        });
-        if (result) {
-          // Authorized. The plan flips when the verified webhook lands, which
-          // is normally a second later — poll the snapshot rather than
-          // claiming success here.
-          setGatewayNote(t("paymentProcessing"));
-          onRenewed();
-          window.setTimeout(onRenewed, 2500);
-          window.setTimeout(onRenewed, 6000);
-        } else {
-          setGatewayNote(t("checkoutCancelled"));
-        }
-        return;
-      }
-      if (body.error === "yearly_period_active") {
-        setGatewayNote(
-          t("yearlyLocked", {
-            date: body.blockedUntil
-              ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(body.blockedUntil))
-              : "—",
-          }),
-        );
-      } else if (body.error === "gateway_not_configured" || res.status === 503) {
-        setGatewayNote(t("gatewayPending"));
-      } else if (body.error === "yearly_unavailable") {
-        setGatewayNote(t("yearlyUnavailable"));
-      } else {
-        setGatewayNote(t("checkoutError"));
-      }
-    } catch {
-      setGatewayNote(t("checkoutError"));
+      // The server creates/reuses the order at the STORED price, opens the
+      // UPI-first sheet, verifies the signature + gateway confirmation, and
+      // polls while a UPI settles. Success is only reported once the SERVER
+      // says the plan is paid — never from the browser's word.
+      const outcome = await startCheckout(plan.id, cycle);
+      setGatewayNote(describeOutcome(outcome));
+      if (outcome.status === "success") onClose();
     } finally {
       setPendingPlan(null);
-      // A successful redirect never reaches here; if we did renew,
-      // refresh the snapshot so gating lifts without a reload.
+      // A confirmed activation already refreshed the snapshot inside
+      // useCheckout; this keeps the provider's gating in step for the other
+      // outcomes (retry, cancel) with no page reload.
       onRenewed();
     }
   };
+  
+  // Map a checkout outcome to the dialog's one-line message. The copy keys
+  // all ship in the Plans namespace across the four locales.
+  function describeOutcome(o: CheckoutOutcome): string {
+    switch (o.status) {
+      case "success":
+        return t("paymentSuccess", {
+          plan: o.planName ?? "\u2014",
+          cycle: o.cycle === "yearly" ? t("yearly") : t("monthly"),
+          date: o.periodEnd ? fmtDate(o.periodEnd) : "\u2014",
+        });
+      case "failed":
+        return t("paymentNotCharged");
+      case "cancelled":
+        return t("checkoutClosed");
+      case "pending":
+        return o.message === "reconcile" && o.paymentId
+          ? t("paymentReconcile", { paymentId: o.paymentId })
+          : t("paymentReconcileNoId");
+      case "error":
+        return o.message;
+    }
+  }
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -424,7 +404,7 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
                   <Button
                     className="mt-4"
                     variant={plan.id === currentPlan ? "outline" : "default"}
-                    disabled={btn.disabled || pendingPlan === plan.id}
+                    disabled={btn.disabled || busy}
                     onClick={() => choose(plan)}
                   >
                     {pendingPlan === plan.id ? t("working") : btn.label}
@@ -446,6 +426,16 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
 }
 
 // ---- helpers ----------------------------------------------------------
+
+// Medium-style date for the "active until" / yearly-lock messages, shared by
+// the choose() flow and the yearly-lock explanation so both read identical.
+function fmtDate(iso: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
 
 // The window a figure is measured over, read from the row's own stored
 // period: a yearly bulk quota says "/year", a monthly one "/month", a

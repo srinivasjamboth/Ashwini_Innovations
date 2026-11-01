@@ -1,8 +1,9 @@
-import { sendTextMessage, sendTemplateMessage } from '@/lib/whatsapp/meta-api'
+import { sendTextMessage, sendTemplateMessage, sendFlowMessage } from '@/lib/whatsapp/meta-api'
 import type { InteractiveMessagePayload } from '@/lib/whatsapp/interactive'
 import {
   engineSendInteractiveButtons,
   engineSendInteractiveList,
+  engineSendMedia,
 } from '@/lib/flows/meta-send'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import {
@@ -19,6 +20,7 @@ import {
   buildSendTemplateSnapshot,
   isMissingColumnError,
 } from '@/lib/whatsapp/template-render'
+import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
@@ -53,7 +55,15 @@ interface SendTemplateArgs {
   contactId: string
   templateName: string
   language?: string
+  /** Legacy body-only values. */
   params?: string[]
+  /**
+   * Structured send-time values (body / header / button params). When the
+   * account has a local copy of the template, these build the full
+   * `components` array so header-text and URL-button variables actually
+   * reach Meta — the legacy `params` path is body-only.
+   */
+  messageParams?: SendTimeParams
 }
 
 export async function engineSendText(args: SendTextArgs): Promise<{ whatsapp_message_id: string }> {
@@ -107,6 +117,136 @@ export async function engineSendInteractive(
     footerText: payload.footer,
     sections: payload.sections,
   })
+}
+
+/**
+ * Send an image / video / document / audio via a public URL from the
+ * automation engine.
+ *
+ * Delegates to the Flows engine's `engineSendMedia`, which already owns
+ * the account-scoped lookup, phone-variant retry, and the `messages`
+ * insert (`content_type` = media kind, `sender_type='bot'`) — same
+ * one-implementation rationale as `engineSendInteractive` above.
+ */
+export { engineSendMedia }
+
+interface SendFlowArgs {
+  accountId: string
+  userId: string
+  conversationId: string
+  contactId: string
+  /** Meta's flow name (`whatsapp_flows.meta_flow_id`). */
+  name: string
+  firstScreenId?: string
+  bodyText: string
+}
+
+/**
+ * Send an interactive FLOW message (WhatsApp Form) from the automation
+ * engine. Resolves the recipient + credentials exactly like
+ * `sendViaMeta` (account-scoped, service-role), then persists the sent
+ * message so the inbox thread shows the form prompt.
+ */
+export async function engineSendFlow(
+  args: SendFlowArgs,
+): Promise<{ whatsapp_message_id: string }> {
+  const db = supabaseAdmin()
+
+  const { data: contact, error: contactErr } = await db
+    .from('contacts')
+    .select('id, phone, wa_user_id')
+    .eq('id', args.contactId)
+    .eq('account_id', args.accountId)
+    .maybeSingle()
+  if (contactErr || !contact) {
+    throw new Error('contact not found for this account')
+  }
+
+  // Same GHSA-m4fx-g6pr-hrw8 defense as every other send path: the
+  // engine runs with the service-role client, so re-verify the
+  // conversation's tenant before inserting a message keyed on it.
+  await assertConversationInAccount(db, args.conversationId, args.accountId)
+
+  const sendTarget = resolveContactSendTarget(contact)
+  if (!sendTarget) {
+    throw new Error(
+      `contact has no usable WhatsApp address (phone: ${contact.phone || 'none'})`
+    )
+  }
+  const sanitized = sendTarget.target
+
+  const { data: config, error: configErr } = await db
+    .from('whatsapp_config')
+    .select('*')
+    .eq('account_id', args.accountId)
+    .single()
+  if (configErr || !config) {
+    throw new Error('WhatsApp not configured for this account')
+  }
+
+  const accessToken = decrypt(config.access_token)
+
+  const attempt = async (phone: string): Promise<string> => {
+    const r = await sendFlowMessage({
+      phoneNumberId: config.phone_number_id,
+      accessToken,
+      to: phone,
+      name: args.name,
+      firstScreenId: args.firstScreenId,
+      bodyText: args.bodyText,
+    })
+    return r.messageId
+  }
+
+  // Same phone-variant retry as the text/template path above.
+  const variants = sendTarget.isPhone ? phoneVariants(sanitized) : [sanitized]
+  let workingPhone = sanitized
+  let waMessageId = ''
+  let lastError: unknown = null
+  for (const v of variants) {
+    try {
+      waMessageId = await attempt(v)
+      workingPhone = v
+      lastError = null
+      break
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!isRecipientNotAllowedError(msg)) throw err
+      lastError = err
+    }
+  }
+  if (lastError) throw lastError
+
+  if (sendTarget.isPhone && workingPhone !== sanitized) {
+    await db.from('contacts').update({ phone: workingPhone }).eq('id', contact.id)
+  }
+
+  // 'interactive' is in the content_type CHECK since migration 010. We
+  // store no interactive_payload — the flow's rendered card lives on
+  // Meta's side; the text preview is enough for the thread.
+  const { error: msgErr } = await db.from('messages').insert({
+    conversation_id: args.conversationId,
+    sender_type: 'bot',
+    content_type: 'interactive',
+    content_text: args.bodyText,
+    message_id: waMessageId,
+    status: 'sent',
+  })
+  if (msgErr) {
+    throw new Error(`sent to Meta but DB insert failed: ${msgErr.message}`)
+  }
+
+  await db
+    .from('conversations')
+    .update({
+      last_message_text: args.bodyText,
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', args.conversationId)
+    .eq('account_id', args.accountId)
+
+  return { whatsapp_message_id: waMessageId }
 }
 
 type SendInput =
@@ -183,6 +323,11 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
         to: phone,
         templateName: input.templateName,
         language: input.language,
+        // Structured path when we have the row: buildSendComponents then
+        // emits header + body + button components. Falls back to the
+        // legacy body-only `params` when no local row exists.
+        template: templateRow ?? undefined,
+        messageParams: input.messageParams,
         params: input.params,
       })
       return r.messageId

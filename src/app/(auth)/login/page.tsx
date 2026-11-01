@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
+import { authUrl, LANDING_BRAND } from "@/lib/marketing/landing-content";
 import { Loader2, Lock, Mail } from "lucide-react";
 import {
   AuthAlert,
@@ -31,6 +32,11 @@ function LoginPageInner() {
   // account. After a successful sign-in we send them to the join
   // page to accept rather than to /dashboard.
   const inviteToken = searchParams.get("invite");
+  // Mirror of the signup preserve-plan handling: a visitor who chose a plan
+  // and then logged in returns to the public checkout/billing page with that
+  // choice still selected, so they can pay. Without these params, /dashboard.
+  const subscribePlan = searchParams.get("plan");
+  const subscribeBilling = searchParams.get("billing") === "yearly" ? "yearly" : "monthly";
   const t = useTranslations("LoginPage");
   // Set by /auth/callback when an emailed link (confirmation, password
   // reset) could not be turned into a session — see src/lib/auth/callback.ts.
@@ -74,7 +80,9 @@ function LoginPageInner() {
     // reload the invite-accept flow already uses in join/[token].
     const destination = inviteToken
       ? `/join/${encodeURIComponent(inviteToken)}`
-      : "/dashboard";
+      : subscribePlan
+        ? `/checkout?plan=${encodeURIComponent(subscribePlan)}&cycle=${subscribeBilling}`
+        : "/dashboard";
     window.location.href = destination;
   };
 
@@ -137,7 +145,7 @@ function LoginPageInner() {
           href={
             inviteToken
               ? `/signup?invite=${encodeURIComponent(inviteToken)}`
-              : "/signup"
+              : authUrl(LANDING_BRAND.signupHref, subscribePlan ?? undefined, subscribeBilling)
           }
           className="auth-link"
         >

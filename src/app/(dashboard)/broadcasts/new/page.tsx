@@ -67,7 +67,9 @@ export default function NewBroadcastPage() {
         headerMediaUrl,
         sendDelayMs,
       });
-      router.push(`/broadcasts/${broadcastId}`);
+      // Delivery now runs on the server; the detail page picks the
+      // campaign up and drives it to completion (see ?autostart=1).
+      router.push(`/broadcasts/${broadcastId}?autostart=1`);
     } catch (err) {
       // Previously swallowed with console.error — the wizard would
       // just no-op, leaving the user confused. Surface the reason.

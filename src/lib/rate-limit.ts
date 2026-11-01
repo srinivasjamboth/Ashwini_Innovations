@@ -173,6 +173,11 @@ export const RATE_LIMITS = {
    *  capping a stampede; excess inbounds simply don't get an auto-reply
    *  (they still land in the inbox for a human). */
   aiAutoReplyAccount: { limit: 30, windowMs: 60_000 },
+  /** Billing checkout / verify. Order creation and signature verification
+   *  are session-bound, state-changing money endpoints. 10/min per user is
+   *  far above any legitimate clicking (a person opens one sheet at a time)
+   *  while bounding a script that hammers checkout or replays verify. */
+  billing: { limit: 10, windowMs: 60_000 },
 } as const;
 
 /** Test-only helper. Clears the in-memory state so unit tests don't

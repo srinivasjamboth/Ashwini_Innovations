@@ -15,7 +15,7 @@ import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
 import { reopenClosedConversation } from '@/lib/conversations/reopen'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { matchesEnvVerifyToken } from '@/lib/whatsapp/webhook-verify-token'
-import { runAutomationsForTrigger } from '@/lib/automations/engine'
+import { runAutomationsForTrigger, resumeWaitRepliesForContact } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
@@ -964,6 +964,22 @@ async function processMessage(
         interactive_reply_id: interactiveReplyId ?? undefined,
       },
     }).catch((err) => console.error('[automations] dispatch failed:', err))
+  }
+
+  // Resume any Ask-a-Question automation runs parked waiting on this
+  // contact's typed answer. Plain text only — a button/list tap is a
+  // menu choice, not an answer, and the interactive_reply trigger
+  // above already handles those. Runs AFTER the trigger dispatch so a
+  // reply that also matches a keyword trigger starts fresh runs first,
+  // mirroring the ordering the flow runner uses. Awaited inside
+  // `after()` (same reason as the loop above); the function owns its
+  // try/catch and never throws.
+  if (!interactiveReplyId && inboundText.trim()) {
+    await resumeWaitRepliesForContact({
+      accountId,
+      contactId: contactRecord.id,
+      messageText: inboundText,
+    })
   }
 
   // AI auto-reply. Runs only for plain-text inbound the deterministic

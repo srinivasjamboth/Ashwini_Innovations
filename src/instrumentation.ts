@@ -17,4 +17,13 @@ export async function register() {
     '@/lib/whatsapp/broadcast-scheduler-arm'
   );
   ensureBroadcastSchedulerArmed();
+
+  // Boot-time payment-gateway check: log a clear warning naming any
+  // missing RAZORPAY_* value (never a secret's value). Dev does not run
+  // register(), so the checkout route calls the same guarded function
+  // lazily — see src/lib/plans/gateway/config-check.ts.
+  const { checkRazorpayConfigOnce } = await import(
+    '@/lib/plans/gateway/config-check'
+  );
+  checkRazorpayConfigOnce();
 }

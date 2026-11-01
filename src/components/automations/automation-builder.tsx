@@ -1,86 +1,56 @@
 "use client"
 
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-  type ReactNode,
-} from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import {
-  ArrowLeft,
-  ChevronDown,
-  Plus,
-  Trash2,
-  GripVertical,
-  MessageSquare,
-  FileText,
-  Tag,
-  TagIcon,
-  UserCheck,
-  PencilLine,
-  Briefcase,
-  Hourglass,
-  GitBranch,
-  Webhook,
-  CircleSlash,
-  Zap,
-  Loader2,
-  ArrowDown,
-  ArrowUp,
-  MousePointerClick,
-  List,
-} from "lucide-react"
+import { ArrowLeft, Loader2, Send, TriangleAlert, X, Zap } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import type {
-  AccountMember,
-  AutomationStepType,
-  AutomationTriggerType,
-  CustomField,
-  InteractiveMessagePayload,
-  KeywordMatchTriggerConfig,
-  MessageTemplate,
-  Tag as TagRecord,
-} from "@/types"
-import {
-  InteractiveBuilder,
-  blankButtonsPayload,
-  blankListPayload,
-} from "@/components/interactive/interactive-builder"
-import { interactivePayloadPreviewText } from "@/lib/whatsapp/interactive"
-import { createClient } from "@/lib/supabase/client"
-import {
-  childPath,
-  insertAt,
-  mapAtPath,
-  moveAt,
-  removeAt,
-  type ParentScope,
-  type StepPath,
-} from "@/lib/automations/builder-tree"
 import { cn } from "@/lib/utils"
+import type { AutomationTriggerType } from "@/types"
+import {
+  blankPaletteConfig,
+  type AutomationEdgeRow,
+  type AutomationNodeRow,
+  type AutomationNodeType,
+  type PaletteNodeType,
+} from "@/lib/automations/graph-types"
+import {
+  decompileStepsToGraph,
+  wouldCreateCycle,
+  type GraphDraft,
+} from "@/lib/automations/graph"
+import { ResourcesProvider } from "@/components/automations/automation-resources"
+import {
+  AutomationCanvas,
+  type CanvasDropTarget,
+} from "@/components/automations/automation-canvas"
+import { SelectActionDialog } from "@/components/automations/select-action-dialog"
+import { NodeConfigPanel } from "@/components/automations/node-config-panel"
+import { FlowTestPanel } from "@/components/automations/flow-test-panel"
 
 // ------------------------------------------------------------
-// Types (builder-local — mirror the flattened rows we POST)
+// Automations builder — React-Flow canvas shell (n8n-style).
+//
+// The node/edge GRAPH is the authoring source of truth; the server
+// recompiles it into the automation_steps tree the engine runs on
+// every graph mutation. Two sync modes:
+//   * Edit (an id exists): every canvas mutation mirrors to the
+//     /api/automations/[id]/nodes|edges endpoints as it happens
+//     (config PATCHes debounced 300ms); Save only writes the
+//     top-level fields + activation.
+//   * Create (/automations/new): the graph lives purely in state and
+//     is flushed once through POST /api/automations { graph }.
+// The top bar, toasts, and activation-issue surfacing are unchanged
+// from the vertical builder so older muscle memory still works.
 // ------------------------------------------------------------
 
 export interface BuilderStep {
   /** Client id; the API assigns real UUIDs server-side. */
   cid: string
-  step_type: AutomationStepType
+  step_type: string
   step_config: Record<string, unknown>
   branches?: { yes: BuilderStep[]; no: BuilderStep[] }
 }
@@ -92,593 +62,410 @@ export interface BuilderInitial {
   trigger_type: AutomationTriggerType
   trigger_config: Record<string, unknown>
   is_active: boolean
+  /** Legacy vertical-builder payload — used as the graph source when
+   *  the automation has no graph rows yet (template seeds, pre-canvas
+   *  rows on the create path). */
   steps: BuilderStep[]
+  /** Graph rows from GET /api/automations/[id] (edit mode). */
+  nodes?: AutomationNodeRow[]
+  edges?: AutomationEdgeRow[]
 }
 
-// ------------------------------------------------------------
-// Step metadata — one source of truth for icon + label + border color
-// ------------------------------------------------------------
-
-interface StepMeta {
-  label: string
-  icon: typeof Zap
-  /** Left-border accent color per spec. */
-  border: string
+interface TopFields {
+  name: string
+  description: string
+  trigger_type: AutomationTriggerType
+  trigger_config: Record<string, unknown>
+  is_active: boolean
 }
 
-const STEP_META: Record<AutomationStepType, StepMeta> = {
-  send_message: { label: "send_message", icon: MessageSquare, border: "border-l-primary" },
-  send_buttons: { label: "send_buttons", icon: MousePointerClick, border: "border-l-primary" },
-  send_list: { label: "send_list", icon: List, border: "border-l-primary" },
-  send_template: { label: "send_template", icon: FileText, border: "border-l-primary" },
-  add_tag: { label: "add_tag", icon: Tag, border: "border-l-primary" },
-  remove_tag: { label: "remove_tag", icon: TagIcon, border: "border-l-primary" },
-  assign_conversation: { label: "assign_conversation", icon: UserCheck, border: "border-l-primary" },
-  update_contact_field: { label: "update_contact_field", icon: PencilLine, border: "border-l-primary" },
-  create_deal: { label: "create_deal", icon: Briefcase, border: "border-l-primary" },
-  wait: { label: "wait", icon: Hourglass, border: "border-l-border" },
-  condition: { label: "condition", icon: GitBranch, border: "border-l-amber-500" },
-  send_webhook: { label: "send_webhook", icon: Webhook, border: "border-l-primary" },
-  close_conversation: { label: "close_conversation", icon: CircleSlash, border: "border-l-primary" },
-}
-
-const ADDABLE_STEPS: AutomationStepType[] = [
-  "send_message",
-  "send_buttons",
-  "send_list",
-  "send_template",
-  "add_tag",
-  "remove_tag",
-  "assign_conversation",
-  "update_contact_field",
-  "create_deal",
-  "wait",
-  "condition",
-  "send_webhook",
-  "close_conversation",
-]
-
-const TRIGGER_OPTIONS: { value: AutomationTriggerType }[] = [
-  { value: "new_message_received" },
-  { value: "first_inbound_message" },
-  { value: "keyword_match" },
-  { value: "interactive_reply" },
-  { value: "new_contact_created" },
-  { value: "conversation_assigned" },
-  { value: "tag_added" },
-  { value: "time_based" },
-]
-
-function cid(): string {
+function uid(): string {
   return (
-    "c_" +
-    (typeof crypto !== "undefined" && "randomUUID" in crypto
+    typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
-      : Math.random().toString(36).slice(2) + Date.now().toString(36))
+      : Math.random().toString(36).slice(2) + Date.now().toString(36)
   )
 }
 
-// The send_buttons / send_list step_config IS an InteractiveMessagePayload,
-// but step_config is typed generically as Record<string, unknown>. These two
-// helpers hold the single unavoidable structural cast in one place so a
-// payload-shape change has one seam to update instead of four scattered
-// `as unknown as` sites.
-function toStepConfig(p: InteractiveMessagePayload): Record<string, unknown> {
-  return p as unknown as Record<string, unknown>
-}
-function asInteractive(cfg: Record<string, unknown>): InteractiveMessagePayload {
-  return cfg as unknown as InteractiveMessagePayload
-}
-
-function blankConfig(type: AutomationStepType): Record<string, unknown> {
-  switch (type) {
-    case "send_message":
-      return { text: "" }
-    case "send_buttons":
-      return toStepConfig(blankButtonsPayload())
-    case "send_list":
-      return toStepConfig(blankListPayload())
-    case "send_template":
-      return { template_name: "", language: "en_US" }
-    case "add_tag":
-    case "remove_tag":
-      return { tag_id: "" }
-    case "assign_conversation":
-      return { mode: "round_robin" }
-    case "update_contact_field":
-      return { field: "name", value: "" }
-    case "create_deal":
-      return { pipeline_id: "", stage_id: "", title: "", value: 0 }
-    case "wait":
-      return { amount: 1, unit: "hours" }
-    case "condition":
-      return { subject: "tag_presence", operand: "", value: "" }
-    case "send_webhook":
-      return { url: "", headers: {}, body_template: "" }
-    case "close_conversation":
-      return {}
-    default:
-      return {}
+/** Non-2xx API response, carrying the {error, issues} activation shape. */
+class GraphApiError extends Error {
+  issues?: { path?: string; message?: string }[]
+  constructor(message: string, issues?: { path?: string; message?: string }[]) {
+    super(message)
+    this.issues = issues
   }
 }
 
-// ------------------------------------------------------------
-// Account resources (tags, members, approved templates, pipelines)
-//
-// Loaded once at the builder root and shared via context so the
-// tag / agent / template pickers below can offer existing resources
-// by name instead of asking the user to paste raw UUIDs. Every picker
-// falls back to a raw input when its list is empty (fresh account or
-// an older deployment), so an automation is always authorable.
-// ------------------------------------------------------------
-
-interface AutomationResources {
-  tags: TagRecord[]
-  members: AccountMember[]
-  templates: MessageTemplate[]
-  customFields: CustomField[]
-  pipelines: PipelineOption[]
-  stages: PipelineStageOption[]
+/** One item from the publish gate's structured result. `path` points at
+ *  the offending node (`nodes.<id>` or a `nodes.<id>.<field>` sub-path)
+ *  so clicking the row can reveal that node on the canvas. */
+export interface PublishIssue {
+  path: string
+  message: string
+  severity?: "error" | "warning"
 }
 
-interface PipelineOption {
-  id: string
-  name: string
+/** Extract the node id from an issue path ("nodes.<id>.template_name"
+ *  → "<id>"), or null when the issue isn't tied to a specific node
+ *  (e.g. graph-wide trigger / step-tree problems). */
+function nodeIdFromPath(path: string): string | null {
+  const m = /^nodes\.([^.]+)/.exec(path)
+  return m ? m[1] : null
 }
 
-interface PipelineStageOption {
-  id: string
-  name: string
-  pipeline_id: string
-  position: number
+async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { "content-type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new GraphApiError(
+      (json as { error?: string }).error ?? `request failed (${res.status})`,
+      (json as { issues?: { path?: string; message?: string }[] }).issues,
+    )
+  }
+  return json as T
 }
 
-const ResourcesContext = createContext<AutomationResources>({
-  tags: [],
-  members: [],
-  templates: [],
-  customFields: [],
-  pipelines: [],
-  stages: [],
-})
-
-function useResources(): AutomationResources {
-  return useContext(ResourcesContext)
-}
-
-function ResourcesProvider({ children }: { children: ReactNode }) {
-  const [tags, setTags] = useState<TagRecord[]>([])
-  const [members, setMembers] = useState<AccountMember[]>([])
-  const [templates, setTemplates] = useState<MessageTemplate[]>([])
-  const [customFields, setCustomFields] = useState<CustomField[]>([])
-  const [pipelines, setPipelines] = useState<PipelineOption[]>([])
-  const [stages, setStages] = useState<PipelineStageOption[]>([])
-
-  useEffect(() => {
-    let cancelled = false
-    const supabase = createClient()
-
-    // Tags, templates and custom fields come straight from the DB — RLS
-    // scopes them to the caller's account. Only APPROVED templates can
-    // actually be sent (anything else 400s at send time), matching the
-    // broadcast picker.
-    void (async () => {
-      const [tagsRes, templatesRes, customFieldsRes, pipelinesRes, stagesRes] =
-        await Promise.all([
-          supabase.from("tags").select("*").order("name"),
-          supabase
-            .from("message_templates")
-            .select("*")
-            .eq("status", "APPROVED")
-            .order("name"),
-          supabase.from("custom_fields").select("*").order("field_name"),
-          supabase.from("pipelines").select("id, name").order("name"),
-          supabase
-            .from("pipeline_stages")
-            .select("id, name, pipeline_id, position")
-            .order("position"),
-        ])
-      if (cancelled) return
-      setTags((tagsRes.data as TagRecord[] | null) ?? [])
-      setTemplates((templatesRes.data as MessageTemplate[] | null) ?? [])
-      setCustomFields((customFieldsRes.data as CustomField[] | null) ?? [])
-      setPipelines((pipelinesRes.data as PipelineOption[] | null) ?? [])
-      setStages((stagesRes.data as PipelineStageOption[] | null) ?? [])
-    })()
-
-    // Members go through the API so we inherit its email-visibility
-    // rules (agents/viewers don't see emails). Unreachable on older
-    // deployments → pickers fall back to a raw agent-id input.
-    void (async () => {
-      try {
-        const res = await fetch("/api/account/members", { cache: "no-store" })
-        if (!res.ok) return
-        const json = (await res.json()) as { members?: AccountMember[] }
-        if (!cancelled) setMembers(json.members ?? [])
-      } catch {
-        // Members endpoint absent — caller falls back to raw input.
-      }
-    })()
-
-    return () => {
-      cancelled = true
+/** Surface {error, issues} responses the way the vertical builder's
+ *  save() did: first concrete issue in the title, its path as the
+ *  description — so the activation toast pattern stays familiar. */
+function useIssueToast() {
+  const t = useTranslations("Automations.builder")
+  return (err: unknown) => {
+    if (err instanceof GraphApiError && err.issues?.[0]?.message) {
+      const first = err.issues[0]
+      toast.error(first.message, {
+        description: first.path ? `at ${first.path}` : undefined,
+      })
+    } else {
+      toast.error(
+        err instanceof Error && err.message ? err.message : t("canvas.syncError"),
+      )
     }
-  }, [])
-
-  return (
-    <ResourcesContext.Provider
-      value={{ tags, members, templates, customFields, pipelines, stages }}
-    >
-      {children}
-    </ResourcesContext.Provider>
-  )
-}
-
-const SELECT_CLASS =
-  "w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground focus:border-primary focus:outline-none"
-
-/** Tag dropdown by name + color, storing the tag's id. Falls back to a
- *  raw id input when no tags exist yet. */
-function TagSelect({
-  value,
-  onChange,
-  t,
-}: {
-  value: string
-  onChange: (v: string) => void
-  t: ReturnType<typeof useTranslations>
-}) {
-  const { tags } = useResources()
-  if (tags.length === 0) {
-    return (
-      <Input
-        placeholder={t("tags.placeholder")}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="bg-muted text-foreground"
-      />
-    )
   }
-  const selected = tags.find((t) => t.id === value)
-  return (
-    <div className="flex items-center gap-2">
-      <span
-        className="h-3 w-3 shrink-0 rounded-full border border-border"
-        style={{ backgroundColor: selected?.color ?? "transparent" }}
-        aria-hidden
-      />
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className={SELECT_CLASS}
-      >
-        <option value="">{t("tags.select")}</option>
-        {tags.map((tg) => (
-          <option key={tg.id} value={tg.id}>
-            {tg.name}
-          </option>
-        ))}
-        {/* Preserve a saved tag that's since been deleted so editing an
-            existing automation doesn't silently drop it. */}
-        {value && !selected && (
-          <option value={value}>{t("tags.unknown", { id: value })}</option>
-        )}
-      </select>
-    </div>
-  )
 }
-
-/** Contact-field dropdown for "Update Contact Field": built-in columns plus
- *  any account custom fields (stored as `custom:<id>`). A saved custom field
- *  that's since been deleted is preserved as a labelled option so editing an
- *  existing automation doesn't silently drop it. */
-function ContactFieldSelect({
-  value,
-  onChange,
-  t,
-}: {
-  value: string
-  onChange: (v: string) => void
-  t: ReturnType<typeof useTranslations>
-}) {
-  const { customFields } = useResources()
-  const customValue = value.startsWith("custom:") ? value : ""
-  const knownCustom =
-    customValue && customFields.some((f) => `custom:${f.id}` === customValue)
-  return (
-    <select
-      value={value || "name"}
-      onChange={(e) => onChange(e.target.value)}
-      className={SELECT_CLASS}
-    >
-      <option value="name">{t("fields.name")}</option>
-      <option value="email">{t("fields.email")}</option>
-      <option value="company">{t("fields.company")}</option>
-      {customFields.length > 0 && (
-        <optgroup label={t("fields.customFields")}>
-          {customFields.map((f) => (
-            <option key={f.id} value={`custom:${f.id}`}>
-              {f.field_name}
-            </option>
-          ))}
-        </optgroup>
-      )}
-      {customValue && !knownCustom && (
-        <option value={customValue}>{t("fields.unknown", { id: customValue })}</option>
-      )}
-    </select>
-  )
-}
-
-/** Agent dropdown by name, storing the member's user_id. Falls back to
- *  a raw id input when the member list is unavailable. */
-function AgentSelect({
-  value,
-  onChange,
-  t,
-}: {
-  value: string
-  onChange: (v: string) => void
-  t: ReturnType<typeof useTranslations>
-}) {
-  const { members } = useResources()
-  if (members.length === 0) {
-    return (
-      <Input
-        placeholder={t("agents.placeholder")}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="bg-muted text-foreground"
-      />
-    )
-  }
-  const selected = members.find((m) => m.user_id === value)
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className={SELECT_CLASS}
-    >
-      <option value="">{t("agents.select")}</option>
-      {members.map((m) => (
-        <option key={m.user_id} value={m.user_id}>
-          {m.full_name || m.email || m.user_id}
-        </option>
-      ))}
-      {value && !selected && (
-        <option value={value}>{t("agents.unknown", { id: value })}</option>
-      )}
-    </select>
-  )
-}
-
-/** Pipeline + stage picker for Create Deal. The automation stores ids because
- *  the engine writes directly to deals, but authors should choose by name. */
-function DealPipelineFields({
-  pipelineId,
-  stageId,
-  onChange,
-  t,
-}: {
-  pipelineId: string
-  stageId: string
-  onChange: (patch: { pipeline_id: string; stage_id: string }) => void
-  t: ReturnType<typeof useTranslations>
-}) {
-  const { pipelines, stages } = useResources()
-
-  if (pipelines.length === 0) {
-    return (
-      <>
-        <FieldBlock label={t("pipelines.pipelineIdLabel")}>
-          <Input
-            value={pipelineId}
-            onChange={(e) =>
-              onChange({ pipeline_id: e.target.value, stage_id: stageId })
-            }
-            className="bg-muted text-foreground"
-          />
-        </FieldBlock>
-        <FieldBlock label={t("pipelines.stageIdLabel")}>
-          <Input
-            value={stageId}
-            onChange={(e) =>
-              onChange({ pipeline_id: pipelineId, stage_id: e.target.value })
-            }
-            className="bg-muted text-foreground"
-          />
-        </FieldBlock>
-      </>
-    )
-  }
-
-  const selectedPipeline = pipelines.find((p) => p.id === pipelineId)
-  const stageOptions = stages.filter((s) => s.pipeline_id === pipelineId)
-  const selectedStage = stageOptions.find((s) => s.id === stageId)
-
-  return (
-    <>
-      <FieldBlock label={t("pipelines.pipelineLabel")}>
-        <select
-          value={pipelineId}
-          onChange={(e) => {
-            const nextPipelineId = e.target.value
-            const firstStage = stages.find(
-              (s) => s.pipeline_id === nextPipelineId
-            )
-            onChange({
-              pipeline_id: nextPipelineId,
-              stage_id: firstStage?.id ?? "",
-            })
-          }}
-          className={SELECT_CLASS}
-        >
-          <option value="">{t("pipelines.selectPipeline")}</option>
-          {pipelines.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-          {pipelineId && !selectedPipeline && (
-            <option value={pipelineId}>{t("pipelines.unknownPipeline", { id: pipelineId })}</option>
-          )}
-        </select>
-      </FieldBlock>
-      <FieldBlock label={t("pipelines.stageLabel")}>
-        <select
-          value={stageId}
-          onChange={(e) =>
-            onChange({ pipeline_id: pipelineId, stage_id: e.target.value })
-          }
-          className={SELECT_CLASS}
-          disabled={!pipelineId || stageOptions.length === 0}
-        >
-          <option value="">
-            {pipelineId ? t("pipelines.selectStage") : t("pipelines.selectPipelineFirst")}
-          </option>
-          {stageOptions.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-          {stageId && pipelineId && !selectedStage && (
-            <option value={stageId}>{t("pipelines.unknownStage", { id: stageId })}</option>
-          )}
-        </select>
-      </FieldBlock>
-    </>
-  )
-}
-
-/** Template dropdown showing approved templates by name + language,
- *  storing both template_name and language. Falls back to manual name +
- *  language inputs when no approved templates are synced yet. */
-function SendTemplateFields({
-  templateName,
-  language,
-  onChange,
-  t,
-}: {
-  templateName: string
-  language: string
-  onChange: (patch: { template_name: string; language: string }) => void
-  t: ReturnType<typeof useTranslations>
-}) {
-  const { templates } = useResources()
-
-  if (templates.length === 0) {
-    return (
-      <>
-        <FieldBlock label={t("templates.templateNameLabel")}>
-          <Input
-            value={templateName}
-            onChange={(e) =>
-              onChange({ template_name: e.target.value, language })
-            }
-            className="bg-muted text-foreground"
-          />
-        </FieldBlock>
-        <FieldBlock label={t("templates.languageLabel")}>
-          <Input
-            value={language}
-            onChange={(e) =>
-              onChange({ template_name: templateName, language: e.target.value })
-            }
-            className="bg-muted text-foreground"
-          />
-        </FieldBlock>
-      </>
-    )
-  }
-
-  // Encode name + language in the option value so two templates that
-  // share a name across languages stay distinct.
-  const toValue = (name: string, lang: string) => `${name}::${lang}`
-  const current = templateName ? toValue(templateName, language) : ""
-  const hasMatch = templates.some(
-    (t) => toValue(t.name, t.language ?? "en_US") === current,
-  )
-
-  return (
-    <FieldBlock label={t("templates.templateLabel")}>
-      <select
-        value={current}
-        onChange={(e) => {
-          const [name, lang] = e.target.value.split("::")
-          onChange({ template_name: name ?? "", language: lang ?? "" })
-        }}
-        className={SELECT_CLASS}
-      >
-        <option value="">{t("templates.select")}</option>
-        {templates.map((tmpl) => {
-          const lang = tmpl.language ?? "en_US"
-          return (
-            <option key={tmpl.id} value={toValue(tmpl.name, lang)}>
-              {tmpl.name} ({lang})
-            </option>
-          )
-        })}
-        {current && !hasMatch && (
-          <option value={current}>
-            {t("templates.unknown", { name: templateName, lang: language || t("templates.unknownLang") })}
-          </option>
-        )}
-      </select>
-    </FieldBlock>
-  )
-}
-
-// ------------------------------------------------------------
-// Main builder component
-// ------------------------------------------------------------
 
 export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
   const router = useRouter()
   const t = useTranslations("Automations.builder")
   const isEditing = !!initial.id
-  const [state, setState] = useState<BuilderInitial>(initial)
+  const toastIssue = useIssueToast()
+
+  const [top, setTop] = useState<TopFields>({
+    name: initial.name,
+    description: initial.description,
+    trigger_type: initial.trigger_type,
+    trigger_config: initial.trigger_config,
+    is_active: initial.is_active,
+  })
+
+  // Graph rows hydrate from GET when present; otherwise the seeded /
+  // legacy step tree is decompiled into a laid-out graph client-side
+  // (decompileStepsToGraph is pure + client-safe).
+  const [graph, setGraph] = useState<GraphDraft>(() =>
+    initial.nodes && initial.nodes.length > 0
+      ? { nodes: initial.nodes, edges: initial.edges ?? [] }
+      : decompileStepsToGraph(initial.steps),
+  )
+
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [dropTarget, setDropTarget] = useState<CanvasDropTarget | null>(null)
   const [saving, setSaving] = useState(false)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
 
-  function patchTop<K extends keyof BuilderInitial>(key: K, value: BuilderInitial[K]) {
-    setState((s) => ({ ...s, [key]: value }))
-  }
+  // Publish state: the in-flight flag, the structured results returned
+  // by /publish (errors block, warnings are advisory), and a focus
+  // signal that pans the canvas onto a node when one of its errors is
+  // clicked.
+  const [publishing, setPublishing] = useState(false)
+  const [results, setResults] = useState<{
+    errors: PublishIssue[]
+    warnings: PublishIssue[]
+  } | null>(null)
+  const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null)
 
-  // --- Step tree mutations (immutable) ---
+  // Test-mode panel: a client-side dry-run walk of the graph. Opening it
+  // captures the current graph snapshot so edits on the canvas mid-test
+  // don't shift the run out from under the tester.
+  const [testing, setTesting] = useState(false)
+  const [testGraph, setTestGraph] = useState<GraphDraft | null>(null)
 
-  function updateStep(path: StepPath, updater: (s: BuilderStep) => BuilderStep) {
-    setState((s) => ({ ...s, steps: mapAtPath(s.steps, path, updater) }))
-  }
-
-  function addStepAt(parent: ParentScope, index: number, type: AutomationStepType) {
-    const node: BuilderStep = {
-      cid: cid(),
-      step_type: type,
-      step_config: blankConfig(type),
-      branches: type === "condition" ? { yes: [], no: [] } : undefined,
+  // Debounced config PATCHes per node — keystrokes collapse into one
+  // write 300ms after typing stops.
+  const configTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+  useEffect(() => {
+    const timers = configTimers.current
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer)
+      timers.clear()
     }
-    setState((s) => ({ ...s, steps: insertAt(s.steps, parent, index, node) }))
-    setExpandedId(node.cid)
+  }, [])
+
+  const graphRef = useRef(graph)
+  graphRef.current = graph
+
+  const selectedNode = useMemo(
+    () => graph.nodes.find((n) => n.id === selectedId) ?? null,
+    [graph.nodes, selectedId],
+  )
+
+  // ------------------------------------------------------------
+  // Local graph mutators (optimistic; server mirror where editing)
+  // ------------------------------------------------------------
+
+  function patchNodeLocal(id: string, patch: Partial<AutomationNodeRow>) {
+    setGraph((g) => ({
+      ...g,
+      nodes: g.nodes.map((n) => (n.id === id ? { ...n, ...patch } : n)),
+    }))
   }
 
-  function deleteStepAt(path: StepPath) {
-    setState((s) => ({ ...s, steps: removeAt(s.steps, path) }))
+  function removeNodesLocal(ids: Set<string>) {
+    setGraph((g) => ({
+      nodes: g.nodes.filter((n) => !ids.has(n.id)),
+      edges: g.edges.filter(
+        (e) => !ids.has(e.source_node_id) && !ids.has(e.target_node_id),
+      ),
+    }))
   }
 
-  function moveStepAt(path: StepPath, direction: -1 | 1) {
-    setState((s) => ({ ...s, steps: moveAt(s.steps, path, direction) }))
+  async function refreshGraph() {
+    if (!isEditing) return
+    try {
+      const json = await api<{ nodes: AutomationNodeRow[]; edges: AutomationEdgeRow[] }>(
+        `/api/automations/${initial.id}/nodes`,
+      )
+      setGraph({ nodes: json.nodes ?? [], edges: json.edges ?? [] })
+    } catch (err) {
+      toastIssue(err)
+    }
   }
+
+  // ------------------------------------------------------------
+  // Canvas callbacks
+  // ------------------------------------------------------------
+
+  function handleNodeDragStop(id: string, x: number, y: number) {
+    patchNodeLocal(id, { position_x: x, position_y: y })
+    if (isEditing) {
+      void api(`/api/automations/${initial.id}/nodes/${id}`, "PATCH", {
+        position_x: x,
+        position_y: y,
+      }).catch(toastIssue)
+    }
+  }
+
+  function handleConfigChange(id: string, config: Record<string, unknown>) {
+    patchNodeLocal(id, { config })
+    if (!isEditing) return
+    const timers = configTimers.current
+    const pending = timers.get(id)
+    if (pending) clearTimeout(pending)
+    timers.set(
+      id,
+      setTimeout(() => {
+        timers.delete(id)
+        void api<{ node: AutomationNodeRow }>(
+          `/api/automations/${initial.id}/nodes/${id}`,
+          "PATCH",
+          { config },
+        ).catch(async (err) => {
+          toastIssue(err)
+          // Server rejected the edit — snap the panel back to truth.
+          await refreshGraph()
+        })
+      }, 300),
+    )
+  }
+
+  function handleConnect(params: {
+    source: string
+    target: string
+    handle: "yes" | "no" | null
+  }) {
+    const { source, target, handle } = params
+    if (source === target) return
+    const { edges, nodes } = graphRef.current
+    const targetType = nodes.find((n) => n.id === target)?.type
+    if (targetType === "starting_step") return
+    if (wouldCreateCycle(edges, source, target)) {
+      toast.error(t("canvas.loopError"))
+      return
+    }
+    // A node may only have one incoming connection (compile semantics)
+    // — re-wiring a target replaces its existing edge.
+    const stale = edges.filter((e) => e.target_node_id === target)
+    if (!isEditing) {
+      setGraph((g) => ({
+        nodes: g.nodes,
+        edges: [
+          ...g.edges.filter((e) => e.target_node_id !== target),
+          {
+            id: uid(),
+            automation_id: "",
+            account_id: "",
+            source_node_id: source,
+            target_node_id: target,
+            source_handle: handle,
+          },
+        ],
+      }))
+      return
+    }
+    void (async () => {
+      try {
+        for (const e of stale) {
+          await api(`/api/automations/${initial.id}/edges/${e.id}`, "DELETE")
+        }
+        const json = await api<{ edge: AutomationEdgeRow }>(
+          `/api/automations/${initial.id}/edges`,
+          "POST",
+          { source_node_id: source, target_node_id: target, source_handle: handle },
+        )
+        setGraph((g) => ({
+          nodes: g.nodes,
+          edges: [...g.edges.filter((e) => e.target_node_id !== target), json.edge],
+        }))
+      } catch (err) {
+        toastIssue(err)
+        await refreshGraph()
+      }
+    })()
+  }
+
+  /** "Select Action" pick: create the node at the drop point, wired to
+   *  the handle the drag started from. */
+  async function createNodeAtDrop(type: PaletteNodeType) {
+    const drop = dropTarget
+    setDropTarget(null)
+    if (!drop) return
+    const config = blankPaletteConfig(type)
+
+    if (!isEditing) {
+      const id = uid()
+      const node: AutomationNodeRow = {
+        id,
+        automation_id: "",
+        account_id: "",
+        type,
+        config,
+        position_x: Math.round(drop.x),
+        position_y: Math.round(drop.y),
+      }
+      setGraph((g) => ({
+        nodes: [...g.nodes, node],
+        edges: drop.sourceNodeId
+          ? [
+              ...g.edges.filter((e) => e.target_node_id !== id),
+              {
+                id: uid(),
+                automation_id: "",
+                account_id: "",
+                source_node_id: drop.sourceNodeId,
+                target_node_id: id,
+                source_handle: drop.sourceHandle,
+              },
+            ]
+          : g.edges,
+      }))
+      setSelectedId(id)
+      return
+    }
+
+    try {
+      const json = await api<{ node: AutomationNodeRow }>(
+        `/api/automations/${initial.id}/nodes`,
+        "POST",
+        {
+          type,
+          config,
+          position_x: Math.round(drop.x),
+          position_y: Math.round(drop.y),
+        },
+      )
+      const node = json.node
+      setGraph((g) => ({ nodes: [...g.nodes, node], edges: g.edges }))
+      if (drop.sourceNodeId) {
+        const stale = graphRef.current.edges.filter(
+          (e) => e.target_node_id === node.id,
+        )
+        for (const e of stale) {
+          await api(`/api/automations/${initial.id}/edges/${e.id}`, "DELETE")
+        }
+        const edgeJson = await api<{ edge: AutomationEdgeRow }>(
+          `/api/automations/${initial.id}/edges`,
+          "POST",
+          {
+            source_node_id: drop.sourceNodeId,
+            target_node_id: node.id,
+            source_handle: drop.sourceHandle,
+          },
+        )
+        setGraph((g) => ({ nodes: g.nodes, edges: [...g.edges, edgeJson.edge] }))
+      }
+      setSelectedId(node.id)
+    } catch (err) {
+      toastIssue(err)
+      await refreshGraph()
+    }
+  }
+
+  function handleNodeDelete(id: string) {
+    const node = graphRef.current.nodes.find((n) => n.id === id)
+    if (!node) return
+    if (node.type === "starting_step") {
+      // The starting step is the graph's anchor — RF marks it
+      // undeletable; this also guards the panel's Delete button.
+      toast.error(t("canvas.startingStepLocked"))
+      return
+    }
+    if (selectedId === id) setSelectedId(null)
+    if (!isEditing) {
+      removeNodesLocal(new Set([id]))
+      return
+    }
+    void (async () => {
+      try {
+        await api(`/api/automations/${initial.id}/nodes/${id}`, "DELETE")
+        removeNodesLocal(new Set([id]))
+      } catch (err) {
+        toastIssue(err)
+        await refreshGraph()
+      }
+    })()
+  }
+
+  function handleEdgeDelete(id: string) {
+    if (!isEditing) {
+      setGraph((g) => ({ ...g, edges: g.edges.filter((e) => e.id !== id) }))
+      return
+    }
+    void (async () => {
+      try {
+        await api(`/api/automations/${initial.id}/edges/${id}`, "DELETE")
+        setGraph((g) => ({ ...g, edges: g.edges.filter((e) => e.id !== id) }))
+      } catch (err) {
+        toastIssue(err)
+        await refreshGraph()
+      }
+    })()
+  }
+
+  // ------------------------------------------------------------
+  // Save — top-level fields (+ the whole graph on the create path)
+  // ------------------------------------------------------------
 
   async function save() {
     setSaving(true)
     try {
       const payload = {
-        name: state.name || t("untitled"),
-        description: state.description || null,
-        trigger_type: state.trigger_type,
-        trigger_config: state.trigger_config,
-        is_active: state.is_active,
-        steps: toApiSteps(state.steps),
+        name: top.name || t("untitled"),
+        description: top.description || null,
+        trigger_type: top.trigger_type,
+        trigger_config: top.trigger_config,
+        is_active: top.is_active,
       }
 
       const res = isEditing
@@ -690,7 +477,7 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
         : await fetch(`/api/automations`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ ...payload, graph }),
           })
 
       const body = await res.json().catch(() => ({}))
@@ -718,8 +505,92 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
     }
   }
 
+  function patchTop<K extends keyof TopFields>(key: K, value: TopFields[K]) {
+    setTop((s) => ({ ...s, [key]: value }))
+  }
+
+  // ------------------------------------------------------------
+  // Publish — run the whole-graph validation gate on the server and
+  // render its structured {errors, warnings}. Blocking errors keep the
+  // flow unpublished; warnings only need a confirmation click.
+  // ------------------------------------------------------------
+
+  async function publishFlow(confirmWarnings = false) {
+    setPublishing(true)
+    try {
+      // Existing automation → the dedicated publish gate.
+      // New automation → the create endpoint's atomic publish path, which
+      // validates the in-memory graph and only persists once it is
+      // publishable (so a failed Publish leaves no orphan draft and
+      // repeated clicks never create duplicates). Both answer with the
+      // same {ok, needsConfirmation, errors, warnings} shape.
+      const res = isEditing
+        ? await fetch(`/api/automations/${initial.id}/publish`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ confirmWarnings }),
+          })
+        : await fetch(`/api/automations`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              name: top.name || t("untitled"),
+              description: top.description || null,
+              trigger_type: top.trigger_type,
+              trigger_config: top.trigger_config,
+              is_active: false,
+              graph,
+              publish: true,
+              confirmWarnings,
+            }),
+          })
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean
+        error?: string
+        needsConfirmation?: boolean
+        errors?: PublishIssue[]
+        warnings?: PublishIssue[]
+      }
+      if (body.ok) {
+        setResults(null)
+        toast.success(t("toasts.published"))
+        router.push("/automations")
+        return
+      }
+      const errors = body.errors ?? []
+      const warnings = body.warnings ?? []
+      // Both blocking errors and advisory-only warnings render in the
+      // same panel — the panel's footer decides which action is offered.
+      setResults({ errors, warnings })
+      if (errors.length > 0) {
+        toast.error(body.error ?? t("toasts.publishFailed"))
+      }
+    } finally {
+      setPublishing(false)
+    }
+  }
+
+  /** Pan/zoom the canvas onto an issue's node and open its config. */
+  function revealIssueNode(path: string) {
+    const id = nodeIdFromPath(path)
+    if (!id) return
+    setSelectedId(id)
+    setFocus((f) => ({ id, nonce: (f?.nonce ?? 0) + 1 }))
+  }
+
+  /** Snapshot the live graph and open the dry-run test panel. Works on
+   *  unsaved drafts too — the walk runs entirely client-side. */
+  function openTestPanel() {
+    setTestGraph({ nodes: graph.nodes, edges: graph.edges })
+    setTesting(true)
+  }
+
   return (
-    <div className="fixed inset-0 flex flex-col bg-background">
+    /* z-40 lifts this full-screen overlay above the dashboard chrome (sticky
+       nav is z-20, sidebar is z-30). Without an explicit z-index the overlay
+       sits at z-auto, so the nav paints over the top bar and hides the
+       Test / Publish / Save buttons while the canvas below still shows. */
+    <div className="fixed inset-0 z-40 flex flex-col bg-background">
       {/* Top bar. At sub-sm widths the "Active" label is hidden and the
           switch moves to the right of the save button, so the name input
           gets maximum width. */}
@@ -733,7 +604,7 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
           <ArrowLeft className="h-4 w-4" />
         </button>
         <input
-          value={state.name}
+          value={top.name}
           onChange={(e) => patchTop("name", e.target.value)}
           placeholder={t("untitled")}
           className="min-w-0 flex-1 rounded-md bg-transparent px-2 py-1 text-sm font-semibold text-foreground placeholder:text-muted-foreground focus:bg-muted focus:outline-none sm:text-base"
@@ -741,11 +612,31 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="hidden sm:inline">{t("active")}</span>
           <Switch
-            checked={state.is_active}
+            checked={top.is_active}
             onCheckedChange={(v) => patchTop("is_active", !!v)}
             aria-label={t("activeAria")}
           />
         </div>
+        <Button
+          variant="outline"
+          onClick={openTestPanel}
+          className="gap-1.5 border-border bg-transparent text-foreground hover:bg-muted"
+        >
+          <Zap className="h-4 w-4" />
+          <span className="hidden sm:inline">{t("publish.test")}</span>
+        </Button>
+        <Button
+          onClick={() => void publishFlow(false)}
+          disabled={publishing}
+          className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-600/90 disabled:opacity-50"
+        >
+          {publishing ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Send className="h-4 w-4" />
+          )}
+          <span className="hidden sm:inline">{t("publish.button")}</span>
+        </Button>
         <Button
           onClick={save}
           disabled={saving}
@@ -757,816 +648,189 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
       </header>
 
       {/* Canvas */}
-      <div className="relative flex-1 overflow-y-auto">
-        <div className="absolute inset-0 bg-[radial-gradient(circle,var(--border)_1px,transparent_1px)] [background-size:20px_20px] pointer-events-none" />
-        <div className="relative mx-auto flex max-w-2xl flex-col items-center gap-0 px-4 py-10">
-          <ResourcesProvider>
-            <TriggerCard
-              type={state.trigger_type}
-              config={state.trigger_config}
-              onTypeChange={(tVal) => patchTop("trigger_type", tVal)}
-              onConfigChange={(c) => patchTop("trigger_config", c)}
-              t={t}
-            />
-            <StepList
-              steps={state.steps}
-              basePath={[]}
-              scope={{ kind: "root" }}
-              expandedId={expandedId}
-              setExpandedId={setExpandedId}
-              updateStep={updateStep}
-              addStepAt={addStepAt}
-              deleteStepAt={deleteStepAt}
-              moveStepAt={moveStepAt}
-            />
-          </ResourcesProvider>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ------------------------------------------------------------
-// Trigger card
-// ------------------------------------------------------------
-
-function TriggerCard({
-  type,
-  config,
-  onTypeChange,
-  onConfigChange,
-  t,
-}: {
-  type: AutomationTriggerType
-  config: Record<string, unknown>
-  onTypeChange: (t: AutomationTriggerType) => void
-  onConfigChange: (c: Record<string, unknown>) => void
-  t: ReturnType<typeof useTranslations>
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    // Card width: full on mobile, fixed 320px on sm+. The canvas wrapper
-    // (max-w-2xl + px-4) keeps this tidy on tablet/desktop.
-    <div className="z-10 w-full max-w-[320px] sm:w-80">
-      <div className="rounded-lg border border-border border-l-4 border-l-blue-500 bg-card shadow-lg">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="flex w-full items-center gap-3 px-4 py-3 text-left"
-        >
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-500/10 text-blue-400">
-            <Zap className="h-4 w-4" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] uppercase tracking-wide text-blue-300">{t("trigger")}</div>
-            <div className="truncate text-sm font-medium text-foreground">
-              {t(`triggers.${type}.label`)}
-            </div>
-          </div>
-          <ChevronDown
-            className={cn("h-4 w-4 text-muted-foreground transition-transform", open && "rotate-180")}
+      <div className="relative min-h-0 flex-1">
+        <ResourcesProvider>
+          <AutomationCanvas
+            nodes={graph.nodes}
+            edges={graph.edges}
+            selectedId={selectedId}
+            triggerType={top.trigger_type}
+            onNodeDragStop={handleNodeDragStop}
+            onConnect={handleConnect}
+            onDropOnCanvas={setDropTarget}
+            onNodeDelete={handleNodeDelete}
+            onEdgeDelete={handleEdgeDelete}
+            onNodeSelected={setSelectedId}
+            focusNode={focus}
           />
-        </button>
-        {open && (
-          <div className="space-y-3 border-t border-border px-4 py-3">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                {t("triggerType")}
-              </label>
-              <select
-                value={type}
-                onChange={(e) => onTypeChange(e.target.value as AutomationTriggerType)}
-                className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground focus:border-primary focus:outline-none"
-              >
-                {TRIGGER_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {t(`triggers.${o.value}.label`)}
-                  </option>
-                ))}
-              </select>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                {t(`triggers.${type}.hint`)}
-              </p>
-            </div>
-            {type === "keyword_match" && (
-              <KeywordMatchConfig
-                config={config as unknown as KeywordMatchTriggerConfig}
-                onChange={onConfigChange}
-                t={t}
-              />
-            )}
-            {type === "interactive_reply" && (
-              <InteractiveReplyConfig config={config} onChange={onConfigChange} t={t} />
-            )}
-            {type === "tag_added" && (
-              <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  Tag
-                </label>
-                <TagSelect
-                  value={(config.tag_id as string) ?? ""}
-                  onChange={(v) => onConfigChange({ ...config, tag_id: v })}
-                  t={t}
-                />
-              </div>
-            )}
-            {type === "time_based" && (
-              <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  {t("schedule")}
-                </label>
-                <Input
-                  placeholder={t("schedulePlaceholder")}
-                  value={(config.schedule as string) ?? ""}
-                  onChange={(e) =>
-                    onConfigChange({ ...config, schedule: e.target.value })
-                  }
-                  className="bg-muted text-foreground"
-                />
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {t("scheduleHint")}
+          {testing && testGraph && (
+            <FlowTestPanel
+              open
+              onClose={() => setTesting(false)}
+              graph={testGraph}
+              triggerType={top.trigger_type}
+              triggerConfig={top.trigger_config}
+            />
+          )}
+        </ResourcesProvider>
+
+        {results && (
+          <div className="absolute inset-x-0 bottom-0 z-30 flex justify-center p-3 sm:p-4">
+            <div className="bg-card w-full max-w-2xl overflow-hidden rounded-xl border border-border shadow-[0_16px_48px_-16px_rgba(0,0,0,0.5)]">
+              <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+                <p className="text-sm font-semibold text-foreground">
+                  {results.errors.length > 0
+                    ? t("publish.errorsTitle", { count: results.errors.length })
+                    : t("publish.warningsTitle", { count: results.warnings.length })}
                 </p>
+                <button
+                  type="button"
+                  onClick={() => setResults(null)}
+                  className="text-muted-foreground hover:text-foreground"
+                  aria-label={t("publish.close")}
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </div>
-            )}
+              <div className="max-h-64 overflow-y-auto px-2 py-2">
+                {results.errors.map((issue, i) => (
+                  <IssueRow
+                    key={`e${i}`}
+                    issue={issue}
+                    tone="error"
+                    onReveal={revealIssueNode}
+                    nodeLabelOf={(id) =>
+                      graph.nodes.find((n) => n.id === id)?.type
+                    }
+                  />
+                ))}
+                {results.warnings.map((issue, i) => (
+                  <IssueRow
+                    key={`w${i}`}
+                    issue={issue}
+                    tone="warning"
+                    onReveal={revealIssueNode}
+                    nodeLabelOf={(id) =>
+                      graph.nodes.find((n) => n.id === id)?.type
+                    }
+                  />
+                ))}
+              </div>
+              <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-2.5">
+                {results.errors.length === 0 && results.warnings.length > 0 ? (
+                  <>
+                    <Button
+                      variant="outline"
+                      onClick={() => setResults(null)}
+                      className="border-border text-foreground"
+                    >
+                      {t("publish.back")}
+                    </Button>
+                    <Button
+                      onClick={() => void publishFlow(true)}
+                      disabled={publishing}
+                      className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-600/90"
+                    >
+                      {publishing ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                      {t("publish.publishAnyway")}
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    variant="outline"
+                    onClick={() => setResults(null)}
+                    className="border-border text-foreground"
+                  >
+                    {t("publish.back")}
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>
-    </div>
-  )
-}
 
-function KeywordMatchConfig({
-  config,
-  onChange,
-  t,
-}: {
-  config: KeywordMatchTriggerConfig
-  onChange: (c: Record<string, unknown>) => void
-  t: ReturnType<typeof useTranslations>
-}) {
-  const keywords = config?.keywords ?? []
-  // Keep a local draft string so the comma and trailing space aren't
-  // stripped on every keystroke (which made multi-word, comma-separated
-  // entry like "SEO, search engine optimization" impossible to type).
-  // We only parse into the keywords array on blur, then re-display the
-  // cleaned, rejoined form. Seeded once on mount; this component remounts
-  // when the trigger type changes, so the seed stays in sync.
-  const [draft, setDraft] = useState(keywords.join(", "))
-
-  // Persist the default the <select> displays. The dropdown falls back to
-  // "contains" for display, but leaving it untouched would otherwise omit
-  // match_type from the saved config — and activation validation then
-  // rejected it (trigger.match_type). Seed once on mount; the component
-  // remounts when the trigger type changes, matching the keywords draft.
-  useEffect(() => {
-    if (config?.match_type == null) {
-      onChange({ ...config, match_type: "contains" })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  function commit() {
-    const parsed = draft
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-    setDraft(parsed.join(", "))
-    onChange({ ...config, keywords: parsed })
-  }
-
-  return (
-    <div className="space-y-2">
-      <div>
-        <label className="mb-1 block text-xs font-medium text-muted-foreground">
-          {t("keywords")}
-        </label>
-        <Input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault()
-              commit()
-            }
-          }}
-          placeholder={t("keywordsHint")}
-          className="bg-muted text-foreground"
-        />
-      </div>
-      <div>
-        <label className="mb-1 block text-xs font-medium text-muted-foreground">
-          {t("config.matchType")}
-        </label>
-        <select
-          value={config?.match_type ?? "contains"}
-          onChange={(e) =>
-            onChange({
-              ...config,
-              match_type: e.target.value as "exact" | "contains" | "word",
-            })
-          }
-          className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground focus:outline-none"
-        >
-          <option value="contains">{t("config.matchContains")}</option>
-          <option value="word">{t("config.matchWord")}</option>
-          <option value="exact">{t("config.matchExact")}</option>
-        </select>
-        {/* Only worth explaining for `word` — "contains" and "exact" read
-            for themselves, and this is the one that changes which messages
-            fire an automation in a way that isn't obvious. */}
-        {config?.match_type === "word" && (
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("config.matchWordHint")}
-          </p>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function InteractiveReplyConfig({
-  config,
-  onChange,
-  t,
-}: {
-  config: Record<string, unknown>
-  onChange: (c: Record<string, unknown>) => void
-  t: ReturnType<typeof useTranslations>
-}) {
-  const ids = (config?.reply_ids as string[] | undefined) ?? []
-  // Same local-draft-then-commit pattern as KeywordMatchConfig so
-  // commas + spaces survive keystrokes.
-  const [draft, setDraft] = useState(ids.join(", "))
-
-  function commit() {
-    const parsed = draft
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-    setDraft(parsed.join(", "))
-    onChange({ ...config, reply_ids: parsed })
-  }
-
-  return (
-    <div>
-      <label className="mb-1 block text-xs font-medium text-muted-foreground">
-        {t("replyIds")}
-      </label>
-      <Input
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault()
-            commit()
-          }
-        }}
-        placeholder={t("replyIdsHint")}
-        className="bg-muted font-mono text-foreground"
+      <SelectActionDialog
+        open={dropTarget !== null}
+        onClose={() => setDropTarget(null)}
+        onPick={(type) => void createNodeAtDrop(type)}
       />
-      <p className="mt-1 text-[11px] text-muted-foreground">{t("replyIdsHelp")}</p>
+
+      <NodeConfigPanel
+        node={selectedNode}
+        triggerType={top.trigger_type}
+        triggerConfig={top.trigger_config}
+        onTriggerTypeChange={(v) => patchTop("trigger_type", v)}
+        onTriggerConfigChange={(c) => patchTop("trigger_config", c)}
+        onConfigChange={handleConfigChange}
+        onDelete={handleNodeDelete}
+        onClose={() => setSelectedId(null)}
+      />
     </div>
   )
 }
 
 // ------------------------------------------------------------
-// Step list + card + connectors
+// Publish-result row. Blocking errors and advisory warnings share one
+// layout; a row whose path points at a concrete node is clickable and
+// pans the canvas onto it (via `onReveal`).
 // ------------------------------------------------------------
 
-interface StepListProps {
-  steps: BuilderStep[]
-  /**
-   * Path of the step that owns this list — `[]` for the root canvas,
-   * the condition's own path for a branch column. Combined with
-   * `scope` by `childPath` to address each child.
-   */
-  basePath: StepPath
-  /** Which bucket this list reads and writes. */
-  scope: ParentScope
-  expandedId: string | null
-  setExpandedId: (id: string | null) => void
-  updateStep: (path: StepPath, updater: (s: BuilderStep) => BuilderStep) => void
-  addStepAt: (parent: ParentScope, index: number, type: AutomationStepType) => void
-  deleteStepAt: (path: StepPath) => void
-  moveStepAt: (path: StepPath, direction: -1 | 1) => void
-}
-
-function StepList(props: StepListProps) {
-  const { steps, basePath, scope, ...rest } = props
-
-  return (
-    <div className="flex w-full flex-col items-center">
-      <AddButton onPick={(t) => props.addStepAt(scope, 0, t)} />
-      {steps.map((step, idx) => (
-        <StepRenderer
-          key={step.cid}
-          step={step}
-          index={idx}
-          total={steps.length}
-          basePath={basePath}
-          scope={scope}
-          {...rest}
-        />
-      ))}
-    </div>
-  )
-}
-
-function StepRenderer({
-  step,
-  index,
-  total,
-  scope,
-  basePath,
-  ...props
+function IssueRow({
+  issue,
+  tone,
+  onReveal,
+  nodeLabelOf,
 }: {
-  step: BuilderStep
-  index: number
-  total: number
-  scope: ParentScope
-  basePath: StepPath
-} & Omit<StepListProps, "steps" | "basePath" | "scope">) {
+  issue: PublishIssue
+  tone: "error" | "warning"
+  onReveal: (path: string) => void
+  nodeLabelOf: (id: string) => AutomationNodeType | undefined
+}) {
   const t = useTranslations("Automations.builder")
-  const path = childPath(basePath, scope, index)
-  const meta = STEP_META[step.step_type]
-  const Icon = meta.icon
-  const expanded = props.expandedId === step.cid
-  const isCondition = step.step_type === "condition"
-  const nested = basePath.length > 0
-  // Card widths on mobile fill the full canvas column (max-w-2xl px-4
-  // still keeps them reasonable). On sm+ fixed widths come back so the
-  // flow visual stays recognisable — but only at the top level: a
-  // branch column is a fraction of its condition's width, so a 320px
-  // card inside one overflowed its own column and dragged the editor's
-  // controls out of reach (issue #474). Nested cards fill the column
-  // they were given instead.
-  //
-  // A condition is wider than a plain step because it has to hold two
-  // branch columns side by side; 600px (the canvas is max-w-2xl, i.e.
-  // 640px of content) leaves each branch ~294px — near enough to the
-  // 320px a step gets at the top level for the same editors to fit.
-  const width = nested
-    ? "w-full"
-    : isCondition
-      ? "w-full max-w-[600px] sm:w-[600px]"
-      : "w-full max-w-[320px] sm:w-80"
-
+  const nodeId = nodeIdFromPath(issue.path)
+  const nodeType = nodeId ? nodeLabelOf(nodeId) : undefined
+  const label = nodeType ? t(`nodeTypes.${nodeType}.label`) : null
+  const isError = tone === "error"
   return (
-    <>
-      <div className={cn("z-10 flex min-w-0 flex-col", width)}>
-        <div
-          className={cn(
-            "rounded-lg border border-border border-l-4 bg-card shadow-lg",
-            meta.border,
-          )}
-        >
-          <button
-            type="button"
-            onClick={() => props.setExpandedId(expanded ? null : step.cid)}
-            className="flex w-full items-center gap-3 px-4 py-3 text-left"
-          >
-            <GripVertical className="h-4 w-4 flex-shrink-0 text-muted-foreground" aria-hidden />
-            <div className="flex h-8 w-8 items-center justify-center rounded-md bg-muted text-muted-foreground">
-              <Icon className="h-4 w-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                {isCondition ? t("kindCondition") : step.step_type === "wait" ? t("kindWait") : t("kindAction")}
-              </div>
-              <div className="truncate text-sm font-medium text-foreground">{t(`steps.${meta.label}`)}</div>
-              <div className="truncate text-[11px] text-muted-foreground">{previewFor(step)}</div>
-            </div>
-            <ChevronDown
-              className={cn("h-4 w-4 text-muted-foreground transition-transform", expanded && "rotate-180")}
-            />
-          </button>
-          {expanded && (
-            <div className="border-t border-border px-4 py-3">
-              <StepEditor
-                step={step}
-                onChange={(next) => props.updateStep(path, () => next)}
-              />
-              <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-3">
-                <div className="flex gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    disabled={index === 0}
-                    aria-label={t("moveUp")}
-                    onClick={() => props.moveStepAt(path, -1)}
-                  >
-                    <ArrowUp className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    disabled={index === total - 1}
-                    aria-label={t("moveDown")}
-                    onClick={() => props.moveStepAt(path, 1)}
-                  >
-                    <ArrowDown className="h-4 w-4" />
-                  </Button>
-                </div>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => props.deleteStepAt(path)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  {t("delete")}
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {isCondition && (
-          <ConditionBranches step={step} path={path} {...props} />
-        )}
-      </div>
-
-      {/* A condition branches into Yes/No (rendered above by
-          ConditionBranches), so it has no linear "continue" path — adding
-          the trailing connector here would produce a spurious third output. */}
-      {!isCondition && (
-        <AddButton onPick={(t) => props.addStepAt(scope, index + 1, t)} />
+    <button
+      type="button"
+      disabled={!nodeId}
+      onClick={() => nodeId && onReveal(issue.path)}
+      className={cn(
+        "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+        nodeId ? "hover:bg-muted" : "cursor-default",
       )}
-    </>
-  )
-}
-
-function ConditionBranches({
-  step,
-  path,
-  ...props
-}: {
-  step: BuilderStep
-  /** The condition's OWN path. Children hang off it, one marker each. */
-  path: StepPath
-} & Omit<StepListProps, "steps" | "basePath" | "scope">) {
-  const t = useTranslations("Automations.builder")
-  const yes = step.branches?.yes ?? []
-  const no = step.branches?.no ?? []
-  return (
-    // Stack Yes/No vertically until THIS CARD is wide enough for two
-    // columns. A viewport breakpoint can't tell: a condition nested in
-    // a branch is a fraction of the screen, and `sm:grid-cols-2` split
-    // it anyway, leaving two columns too narrow to render a step in.
-    <div className="@container mt-3 w-full">
-      <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2">
-        <BranchColumn label={t("branches.yes")} color="text-primary">
-          <StepList
-            {...props}
-            steps={yes}
-            basePath={path}
-            scope={{ kind: "branch", parentCid: step.cid, branch: "yes" }}
-          />
-        </BranchColumn>
-        <BranchColumn label={t("branches.no")} color="text-rose-400">
-          <StepList
-            {...props}
-            steps={no}
-            basePath={path}
-            scope={{ kind: "branch", parentCid: step.cid, branch: "no" }}
-          />
-        </BranchColumn>
-      </div>
-    </div>
-  )
-}
-
-function BranchColumn({
-  label,
-  color,
-  children,
-}: {
-  label: string
-  color: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className="flex min-w-0 flex-col items-center">
-      <div className={cn("mb-2 text-[11px] font-semibold uppercase", color)}>{label}</div>
-      {children}
-    </div>
-  )
-}
-
-function AddButton({ onPick }: { onPick: (t: AutomationStepType) => void }) {
-  const t = useTranslations("Automations.builder")
-  return (
-    <div className="relative flex flex-col items-center">
-      <div className="h-4 w-[2px] bg-border" aria-hidden />
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-dashed border-border bg-background text-muted-foreground transition-colors hover:border-primary hover:bg-primary/10 hover:text-primary data-[popup-open]:border-primary data-[popup-open]:bg-primary/20 data-[popup-open]:text-primary"
-          aria-label={t("addStep")}
-        >
-          <Plus className="h-4 w-4" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="start"
-          className="max-h-80 min-w-56 overflow-y-auto border-border bg-popover"
-        >
-          {ADDABLE_STEPS.map((tp) => {
-            const Icon = STEP_META[tp].icon
-            return (
-              <DropdownMenuItem key={tp} onClick={() => onPick(tp)}>
-                <Icon className="h-4 w-4" />
-                {t(`steps.${STEP_META[tp].label}`)}
-              </DropdownMenuItem>
-            )
-          })}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <div className="h-4 w-[2px] bg-border" aria-hidden />
-    </div>
+    >
+      {isError ? (
+        <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+      ) : (
+        <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+      )}
+      <span className="min-w-0 flex-1">
+        {label && (
+          <span className="mr-1.5 font-semibold text-foreground">{label}:</span>
+        )}
+        <span className="text-muted-foreground">{issue.message}</span>
+      </span>
+      {nodeId && (
+        <span className="text-primary shrink-0 text-xs font-medium">
+          {t("publish.reveal")}
+        </span>
+      )}
+    </button>
   )
 }
 
 // ------------------------------------------------------------
-// Per-step config editor
+// Legacy step-tree helpers. The vertical builder that consumed them
+// is gone, but template-seed pages and older callers still import
+// these, so the shapes stay exported.
 // ------------------------------------------------------------
-
-function StepEditor({
-  step,
-  onChange,
-}: {
-  step: BuilderStep
-  onChange: (s: BuilderStep) => void
-}) {
-  const t = useTranslations("Automations.builder")
-  const cfg = step.step_config
-  const set = (patch: Record<string, unknown>) =>
-    onChange({ ...step, step_config: { ...cfg, ...patch } })
-
-  switch (step.step_type) {
-    case "send_message":
-      return (
-        <FieldBlock label={t("config.messageText")}>
-          <Textarea
-            value={(cfg.text as string) ?? ""}
-            onChange={(e) => set({ text: e.target.value })}
-            placeholder={t("config.placeholderMessageText")}
-            className="min-h-24 bg-muted text-foreground"
-          />
-        </FieldBlock>
-      )
-    case "send_buttons":
-    case "send_list":
-      // The whole step_config IS the interactive payload; the shared
-      // builder edits it in place (and enforces Meta's limits + preview).
-      return (
-        <InteractiveBuilder
-          value={asInteractive(cfg)}
-          onChange={(payload) =>
-            onChange({ ...step, step_config: toStepConfig(payload) })
-          }
-        />
-      )
-    case "send_template":
-      return (
-        <SendTemplateFields
-          templateName={(cfg.template_name as string) ?? ""}
-          language={(cfg.language as string) ?? ""}
-          onChange={(patch) => set(patch)}
-          t={t}
-        />
-      )
-    case "add_tag":
-    case "remove_tag":
-      return (
-        <FieldBlock label={t("config.tagLabel")}>
-          <TagSelect
-            value={(cfg.tag_id as string) ?? ""}
-            onChange={(v) => set({ tag_id: v })}
-            t={t}
-          />
-        </FieldBlock>
-      )
-    case "assign_conversation":
-      return (
-        <>
-          <FieldBlock label={t("config.modeLabel")}>
-            <select
-              value={(cfg.mode as string) ?? "round_robin"}
-              onChange={(e) => set({ mode: e.target.value })}
-              className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground"
-            >
-              <option value="round_robin">{t("config.modes.round_robin")}</option>
-              <option value="specific">{t("config.modes.specific")}</option>
-            </select>
-          </FieldBlock>
-          {cfg.mode === "specific" && (
-            <FieldBlock label={t("config.agentLabel")}>
-              <AgentSelect
-                value={(cfg.agent_id as string) ?? ""}
-                onChange={(v) => set({ agent_id: v })}
-                t={t}
-              />
-            </FieldBlock>
-          )}
-        </>
-      )
-    case "update_contact_field":
-      return (
-        <>
-          <FieldBlock label={t("config.fieldLabel")}>
-            <ContactFieldSelect
-              value={(cfg.field as string) ?? "name"}
-              onChange={(v) => set({ field: v })}
-              t={t}
-            />
-          </FieldBlock>
-          <FieldBlock label={t("config.valueLabel")}>
-            <Input
-              value={(cfg.value as string) ?? ""}
-              onChange={(e) => set({ value: e.target.value })}
-              placeholder={t.raw("config.placeholderValue")}
-              className="bg-muted text-foreground"
-            />
-          </FieldBlock>
-        </>
-      )
-    case "create_deal":
-      return (
-        <>
-          <DealPipelineFields
-            pipelineId={(cfg.pipeline_id as string) ?? ""}
-            stageId={(cfg.stage_id as string) ?? ""}
-            onChange={(patch) => set(patch)}
-            t={t}
-          />
-          <FieldBlock label={t("config.titleLabel")}>
-            <Input
-              value={(cfg.title as string) ?? ""}
-              onChange={(e) => set({ title: e.target.value })}
-              className="bg-muted text-foreground"
-            />
-          </FieldBlock>
-          <FieldBlock label={t("config.valueLabel")}>
-            <Input
-              type="number"
-              value={(cfg.value as number) ?? 0}
-              onChange={(e) => set({ value: Number(e.target.value) })}
-              className="bg-muted text-foreground"
-            />
-          </FieldBlock>
-        </>
-      )
-    case "wait":
-      return (
-        <div className="grid grid-cols-2 gap-2">
-          <FieldBlock label={t("config.amountLabel")}>
-            <Input
-              type="number"
-              min={1}
-              value={(cfg.amount as number) ?? 1}
-              onChange={(e) => set({ amount: Math.max(1, Number(e.target.value)) })}
-              className="bg-muted text-foreground"
-            />
-          </FieldBlock>
-          <FieldBlock label={t("config.unitLabel")}>
-            <select
-              value={(cfg.unit as string) ?? "hours"}
-              onChange={(e) => set({ unit: e.target.value })}
-              className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground"
-            >
-              <option value="minutes">{t("config.units.minutes")}</option>
-              <option value="hours">{t("config.units.hours")}</option>
-              <option value="days">{t("config.units.days")}</option>
-            </select>
-          </FieldBlock>
-        </div>
-      )
-    case "condition":
-      return (
-        <>
-          <FieldBlock label={t("config.subjectLabel")}>
-            <select
-              value={(cfg.subject as string) ?? "tag_presence"}
-              onChange={(e) => set({ subject: e.target.value })}
-              className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground"
-            >
-              <option value="tag_presence">{t("config.subjects.tag_presence")}</option>
-              <option value="contact_field">{t("config.subjects.contact_field")}</option>
-              <option value="message_content">{t("config.subjects.message_content")}</option>
-              <option value="time_of_day">{t("config.subjects.time_of_day")}</option>
-            </select>
-          </FieldBlock>
-          <FieldBlock label={t("config.operandLabel")}>
-            <Input
-              placeholder={
-                cfg.subject === "time_of_day"
-                  ? t("config.placeholderTime")
-                  : cfg.subject === "contact_field"
-                  ? t("config.placeholderContact")
-                  : cfg.subject === "tag_presence"
-                  ? t("config.placeholderTag")
-                  : ""
-              }
-              value={(cfg.operand as string) ?? ""}
-              onChange={(e) => set({ operand: e.target.value })}
-              className="bg-muted text-foreground"
-            />
-          </FieldBlock>
-          {(cfg.subject === "contact_field" || cfg.subject === "message_content") && (
-            <FieldBlock label={t("config.valueLabel")}>
-              <Input
-                value={(cfg.value as string) ?? ""}
-                onChange={(e) => set({ value: e.target.value })}
-                className="bg-muted text-foreground"
-              />
-            </FieldBlock>
-          )}
-        </>
-      )
-    case "send_webhook":
-      return (
-        <>
-          <FieldBlock label={t("config.urlLabel")}>
-            <Input
-              value={(cfg.url as string) ?? ""}
-              onChange={(e) => set({ url: e.target.value })}
-              className="bg-muted text-foreground"
-            />
-          </FieldBlock>
-          <FieldBlock label={t("config.bodyTemplateLabel")}>
-            <Textarea
-              value={(cfg.body_template as string) ?? ""}
-              onChange={(e) => set({ body_template: e.target.value })}
-              className="min-h-20 bg-muted font-mono text-xs text-foreground"
-            />
-          </FieldBlock>
-        </>
-      )
-    case "close_conversation":
-      return (
-        <p className="text-xs text-muted-foreground">
-          {t("config.closeConversationHint", { defaultValue: "Sets the conversation status to \"closed\". No configuration needed." })}
-        </p>
-      )
-    default:
-      return null
-  }
-}
-
-function FieldBlock({
-  label,
-  children,
-}: {
-  label: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className="mb-2 last:mb-0">
-      <label className="mb-1 block text-xs font-medium text-muted-foreground">{label}</label>
-      {children}
-    </div>
-  )
-}
-
-function previewFor(step: BuilderStep): string {
-  switch (step.step_type) {
-    case "send_message":
-      return (step.step_config.text as string) || "no text yet"
-    case "send_buttons":
-    case "send_list":
-      return interactivePayloadPreviewText(asInteractive(step.step_config)) || "no body yet"
-    case "send_template":
-      return (step.step_config.template_name as string) || "pick a template"
-    case "wait":
-      return `${step.step_config.amount ?? "?"} ${step.step_config.unit ?? ""}`
-    case "condition":
-      return `when ${step.step_config.subject ?? "?"}`
-    case "send_webhook":
-      return (step.step_config.url as string) || "no url"
-    default:
-      return ""
-  }
-}
-
-// ------------------------------------------------------------
-// Serialize builder tree → API payload (flattened shape)
-// ------------------------------------------------------------
-
-interface ApiStep {
-  step_type: string
-  step_config: Record<string, unknown>
-  branches?: { yes?: ApiStep[]; no?: ApiStep[] }
-}
-
-export function toApiSteps(steps: BuilderStep[]): ApiStep[] {
-  return steps.map((s) => ({
-    step_type: s.step_type,
-    step_config: s.step_config,
-    branches: s.branches
-      ? { yes: toApiSteps(s.branches.yes), no: toApiSteps(s.branches.no) }
-      : undefined,
-  }))
-}
 
 /**
  * Convert server-returned step tree (from loadStepsTree) into the
@@ -1581,8 +845,8 @@ export interface ServerStepNode {
 
 export function fromServerSteps(nodes: ServerStepNode[]): BuilderStep[] {
   return nodes.map((n) => ({
-    cid: cid(),
-    step_type: n.step_type as AutomationStepType,
+    cid: uid(),
+    step_type: n.step_type,
     step_config: n.step_config ?? {},
     branches:
       n.step_type === "condition"

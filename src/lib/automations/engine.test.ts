@@ -15,6 +15,8 @@ const h = vi.hoisted(() => ({
     upsertCalls: [] as { table: string; payload: unknown }[],
     logInserts: [] as Record<string, unknown>[],
     logUpdates: [] as Record<string, unknown>[],
+    /** Rows parked on `automation_pending_executions` (timer / wait_reply). */
+    pendingInserts: [] as Record<string, unknown>[],
   },
 }));
 
@@ -63,6 +65,13 @@ vi.mock("./admin-client", () => {
       return { data: { steps_executed: [], status: "success" }, error: null };
     }
     if (table === "automation_steps") return { data: state.steps, error: null };
+    if (table === "automation_pending_executions") {
+      if (type === "insert") {
+        state.pendingInserts.push(ops.payload as Record<string, unknown>);
+        return { data: null, error: null };
+      }
+      return { data: [], error: null };
+    }
     return { data: null, error: null };
   }
 
@@ -107,9 +116,12 @@ vi.mock("./meta-send", () => ({
   engineSendText: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
   engineSendTemplate: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
   engineSendInteractive: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
+  engineSendMedia: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
+  engineSendFlow: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
 }));
 
 import { runAutomationsForTrigger, triggerMatches } from "./engine";
+import { engineSendTemplate } from "./meta-send";
 import type { Automation, KeywordMatchTriggerConfig } from "@/types";
 
 const ACCOUNT = "acct-1";
@@ -125,6 +137,7 @@ beforeEach(() => {
   h.state.upsertCalls = [];
   h.state.logInserts = [];
   h.state.logUpdates = [];
+  h.state.pendingInserts = [];
 });
 
 describe("runAutomationsForTrigger — tenant isolation", () => {
@@ -591,5 +604,167 @@ describe("triggerMatches — keyword_match", () => {
   it("ignores empty keywords and empty messages in `word` mode", () => {
     expect(on(automation({ keywords: [""], match_type: "word" }), "anything")).toBe(false);
     expect(on(automation({ keywords: ["hi"], match_type: "word" }), "")).toBe(false);
+  });
+});
+
+// ------------------------------------------------------------
+// New graph-compiled step types (Media / Ask a Question). Both
+// originate on the canvas and compile to `send_media` /
+// `capture_reply`; these prove the engine runs them end-to-end
+// against the mocked Meta sender.
+// ------------------------------------------------------------
+describe("send_media — Media/Audio nodes", () => {
+  const mediaStep = (config: Record<string, unknown>) => ({
+    id: "s1",
+    automation_id: "a1",
+    step_type: "send_media",
+    position: 0,
+    parent_step_id: null,
+    step_config: config,
+  });
+
+  it("sends an image through Meta and logs the success detail", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.ownedConversation = { id: "conv-1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [mediaStep({ kind: "image", link: "https://cdn.test/a.png", caption: "Look" })];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: { conversation_id: "conv-1" },
+    });
+
+    const details = h.state.logUpdates
+      .flatMap((u) => (u.steps_executed as { detail?: string }[] | undefined) ?? [])
+      .map((r) => r.detail);
+    expect(details.some((d) => /image sent via Meta/.test(String(d)))).toBe(true);
+    // Media is not a suspension point — nothing parked.
+    expect(h.state.pendingInserts).toHaveLength(0);
+  });
+
+  it("fails the step when the media link is missing", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.ownedConversation = { id: "conv-1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [mediaStep({ kind: "image" })];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: { conversation_id: "conv-1" },
+    });
+
+    const details = h.state.logUpdates
+      .flatMap((u) => (u.steps_executed as { status?: string; detail?: string }[] | undefined) ?? []);
+    expect(details.some((r) => r.status === "failed")).toBe(true);
+  });
+});
+
+describe("send_template — variable slots (body / header / URL buttons)", () => {
+  const templateStep = (config: Record<string, unknown>) => ({
+    id: "s1",
+    automation_id: "a1",
+    step_type: "send_template",
+    position: 0,
+    parent_step_id: null,
+    step_config: config,
+  });
+  const send = vi.mocked(engineSendTemplate);
+
+  it("interpolates body/header/button values and forwards structured messageParams", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.ownedConversation = { id: "conv-1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [
+      templateStep({
+        template_name: "order_update",
+        language: "en_US",
+        body: ["{{ vars.name }}", "{{ message.text }}"],
+        headerText: "Hi {{ vars.name }}",
+        buttonParams: { "0": "{{ vars.tracking }}" },
+      }),
+    ];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: {
+        conversation_id: "conv-1",
+        message_text: "Shipped today",
+        vars: { name: "Asha", tracking: "ABC123" },
+      },
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+    const arg = send.mock.calls[0][0] as unknown as {
+      params?: string[];
+      messageParams?: Record<string, unknown>;
+    };
+    expect(arg.params).toEqual(["Asha", "Shipped today"]);
+    expect(arg.messageParams).toMatchObject({
+      body: ["Asha", "Shipped today"],
+      headerText: "Hi Asha",
+      buttonParams: { 0: "ABC123" },
+    });
+  });
+
+  it("supports the legacy variables map, numerically sorted", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.ownedConversation = { id: "conv-1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [
+      templateStep({
+        template_name: "welcome",
+        language: "en_US",
+        variables: { "1": "Sam", "2": "Nice to meet you" },
+      }),
+    ];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: { conversation_id: "conv-1" },
+    });
+
+    const arg = send.mock.calls[0][0] as unknown as { messageParams?: { body?: string[] } };
+    expect(arg.messageParams?.body).toEqual(["Sam", "Nice to meet you"]);
+  });
+});
+
+describe("capture_reply — Ask a Question node", () => {
+  it("sends the question, parks a wait_reply row, and marks the run partial", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.ownedConversation = { id: "conv-1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [
+      {
+        id: "s1",
+        automation_id: "a1",
+        step_type: "capture_reply",
+        position: 0,
+        parent_step_id: null,
+        step_config: { text: "What is your name?", variable: "name" },
+      },
+    ];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: { conversation_id: "conv-1" },
+    });
+
+    expect(h.state.pendingInserts).toHaveLength(1);
+    const row = h.state.pendingInserts[0];
+    expect(row).toMatchObject({ kind: "wait_reply", contact_id: "c1", status: "pending" });
+    // The variable name rides in the resumed context under the marker.
+    expect((row.context as { vars: Record<string, unknown> }).vars._wait_reply).toBe("name");
+    // Suspension, not completion — the scope stops as 'partial'.
+    expect(h.state.logUpdates.some((u) => u.status === "partial")).toBe(true);
   });
 });

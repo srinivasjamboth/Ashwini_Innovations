@@ -35,6 +35,10 @@ export async function GET(request: Request) {
     .from('automation_pending_executions')
     .select('*')
     .eq('status', 'pending')
+    // Post-055 only timer rows are cron-drained; Ask-a-Question runs
+    // park on kind='wait_reply' rows and resume from the webhook.
+    // The default keeps every pre-055 row a timer.
+    .eq('kind', 'timer')
     .lte('run_at', new Date().toISOString())
     .order('run_at', { ascending: true })
     .limit(50)

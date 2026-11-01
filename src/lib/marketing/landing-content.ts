@@ -50,6 +50,21 @@ export const LANDING_BRAND = {
   signupHref: "/signup",
 } as const;
 
+/**
+ * Auth link for a plan chosen on the pricing page, so either door (create
+ * account / log in) carries the selection and both pages hand the visitor
+ * back to `/?plan=…&billing=…` once they hold a session. Without a plan it
+ * returns the plain route, exactly as the header / hero / footer links.
+ */
+export function authUrl(
+  href: string,
+  plan?: string,
+  cycle?: "monthly" | "yearly",
+): string {
+  if (!plan) return href;
+  return `${href}?plan=${encodeURIComponent(plan)}&billing=${cycle ?? "monthly"}`;
+}
+
 /* ------------------------------------------------------------
    Hero
    ------------------------------------------------------------ */
@@ -204,6 +219,11 @@ export const LANDING_FEATURES: LandingFeature[] = [
    ------------------------------------------------------------ */
 
 export interface LandingPlan {
+  /** The DB plan key, when the card was built from `/api/billing/plans`.
+   *  Used only to preserve the chosen plan in the signup link (spec PART 4:
+   *  a logged-out visitor is sent to register with the plan + cycle kept).
+   *  Absent on the no-fetch SSR fallback. */
+  id?: string;
   name: string;
   tagline: string;
   /** Per-month price, thousands-separated, without the currency symbol. */

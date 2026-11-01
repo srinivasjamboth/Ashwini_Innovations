@@ -42,7 +42,10 @@ const SECURITY_HEADERS = [
       // Next.js needs 'unsafe-inline' for its inline hydration script
       // and 'unsafe-eval' in dev + some production optimisations.
       // Nonce-based CSP is a later project.
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      // checkout.razorpay.com: the lazily-injected payment sheet script
+      // (see src/lib/plans/gateway/razorpay-client.ts). Report-Only today,
+      // but listed now so flipping to enforcement cannot break checkout.
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://checkout.razorpay.com",
       // Tailwind + inline style attributes on lots of components.
       "style-src 'self' 'unsafe-inline'",
       // Supabase public-bucket avatars, contact avatars (arbitrary
@@ -53,9 +56,15 @@ const SECURITY_HEADERS = [
       // and Supabase public-bucket audio/video the inbox renders.
       "media-src 'self' blob: https://*.supabase.co",
       "font-src 'self' data:",
+      // Razorpay checkout runs in a cross-origin iframe; without an
+      // explicit frame-src it would fall back to default-src 'self' and
+      // be blocked once CSP is enforced.
+      "frame-src 'self' https://checkout.razorpay.com https://api.razorpay.com https://www.razorpay.com",
       // Supabase REST + realtime (WSS). All Meta API calls happen
       // server-side, so graph.facebook.com does not belong here.
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+      // api/checkout.razorpay.com: the browser→gateway calls checkout.js
+      // makes directly (UPI/card flows).
+      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.razorpay.com https://checkout.razorpay.com",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",

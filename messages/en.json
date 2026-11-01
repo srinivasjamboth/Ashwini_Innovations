@@ -758,6 +758,8 @@
       "toastResumeStarted": "Sending {count} recipients in the background.",
       "toastResumeStartedCapped": "Sending {count} recipients in the background. {remaining} more will need another run.",
       "toastResumeFailed": "Could not resume: {error}",
+      "autoResumeRunning": "Resuming automatically until every recipient is processed…",
+      "toastResumeAllDone": "Broadcast finished — every recipient was processed from the server.",
       "scheduledFor": "Scheduled to send",
       "reschedule": "Reschedule",
       "cancelSchedule": "Cancel schedule",
@@ -1047,10 +1049,69 @@
       "saveDraft": "Save Draft",
       "untitled": "Untitled automation",
       "backToAutomations": "Back to automations",
+      "publish": {
+        "button": "Publish",
+        "test": "Test",
+        "saveDraftFirst": "Save the draft before publishing",
+        "errorsTitle": "{count, plural, one {# blocking error} other {# blocking errors}} — fix these to publish",
+        "warningsTitle": "{count, plural, one {# warning} other {# warnings}} — review before publishing",
+        "close": "Dismiss",
+        "back": "Back to editing",
+        "publishAnyway": "Publish anyway",
+        "reveal": "Show node"
+      },
+      "test": {
+        "banner": "Test mode — no real messages are sent",
+        "reset": "Reset",
+        "title": "Test this flow",
+        "subtitle": "Dry-run walk of the saved graph",
+        "close": "Close",
+        "conditionSource": "Condition data",
+        "manual": "Manual",
+        "realContact": "Real contact",
+        "pickContact": "Pick a contact…",
+        "loading": "Loading…",
+        "contactTags": "{count, plural, one {# tag on this contact} other {# tags on this contact}}",
+        "manualHint": "Toggle tags and set field values used by Condition nodes.",
+        "fieldValue": "value",
+        "fieldName": "field (e.g. city)",
+        "addField": "Add",
+        "entryHint": "Type a message to see whether it triggers this flow, then watch it run.",
+        "entryPlaceholder": "Type a test message…",
+        "send": "Send",
+        "notTriggered": "This message would not trigger this flow ({reason}).",
+        "triggered": "Trigger matched — {reason}",
+        "noStart": "This flow has no Starting Step node.",
+        "endedMissing": "Flow ended: a connected node is missing.",
+        "endedBranch": "Flow ended here: the \"{branch}\" branch is not connected.",
+        "endedHere": "Flow ended here.",
+        "endedGuard": "Flow ended: step limit reached (possible loop).",
+        "endedMarker": "— end of flow —",
+        "formSkipped": "(did not submit the form)",
+        "formPending": "Waiting for the contact to submit the form.",
+        "runAgain": "Run again",
+        "tapPrompt": "Tap an option to continue:",
+        "answerPlaceholderVar": "Type a reply for “{variable}”…",
+        "answerPlaceholder": "Type a reply…",
+        "formSubmitted": "(submitted the form)",
+        "formSubmit": "Submit form",
+        "formDontSubmit": "Don't submit",
+        "askBadge": "Question",
+        "emptyText": "(empty)",
+        "document": "Document",
+        "noMedia": "No media uploaded",
+        "noAudio": "No audio uploaded",
+        "templateBadge": "Template",
+        "formBadge": "WhatsApp Form",
+        "formTapHint": "Tap to open the form",
+        "paymentText": "Payment requested: {amount} {currency}"
+      },
       "toasts": {
         "saved": "Automation saved",
         "created": "Automation created",
-        "saveFailed": "Save failed"
+        "saveFailed": "Save failed",
+        "published": "Flow published — it is now active",
+        "publishFailed": "Could not publish this flow"
       },
       "tags": {
         "select": "Select a tag…",
@@ -1141,7 +1202,140 @@
         "matchWord": "Whole word",
         "matchWordHint": "Matches the keyword only as a standalone word, so \"k\" no longer fires on \"thanks\". Best for short keywords in space-separated languages; use Contains for languages written without spaces.",
         "matchExact": "Exact",
-        "closeConversationHint": "Sets the conversation status to \"closed\". No configuration needed."
+        "closeConversationHint": "Sets the conversation status to \"closed\". No configuration needed.",
+        "variablesLabel": "Variables (JSON)",
+        "questionLabel": "Question",
+        "placeholderQuestion": "What's your name?",
+        "variableLabel": "Save reply into variable",
+        "variablePlaceholder": "e.g. name, email",
+        "variableHelp": "Use it later as {{ vars.x }} in any message.",
+        "currencyLabel": "Currency",
+        "descriptionLabel": "Description",
+        "placeholderDescription": "Order #1234",
+        "paymentHint": "WhatsApp has no native payment message — this sends the amount, currency, and description as a text message.",
+        "spreadsheetLabel": "Spreadsheet",
+        "placeholderSpreadsheet": "Sheet name or ID",
+        "mappingLabel": "Column mapping",
+        "columnLabel": "Column",
+        "googleSheetHint": "No Google Sheets integration yet — the configuration is saved and the step is logged as skipped when it runs.",
+        "eventTypeLabel": "Event type",
+        "customDataLabel": "Custom data",
+        "keyLabel": "Key",
+        "addRow": "Add row",
+        "methodLabel": "Method",
+        "mediaKindLabel": "Media type",
+        "kinds": {
+          "image": "Image",
+          "video": "Video",
+          "document": "Document"
+        },
+        "captionLabel": "Caption",
+        "placeholderCaption": "Optional caption…",
+        "filenameLabel": "Filename",
+        "flowLabel": "WhatsApp Form",
+        "flowIdPlaceholder": "Flow id",
+        "noPublishedFlows": "No published flows found — publish one in the WhatsApp Flows module first.",
+        "selectFlow": "Select a flow…",
+        "unknownFlow": "{id} (unknown flow)",
+        "flowHelp": "Sends the published flow as a form message.",
+        "noTemplates": "No approved templates found — create and approve one on the Templates page first.",
+        "noTemplateVars": "This template has no variables to fill.",
+        "varValuePlaceholder": "Value, or {{ vars.name }} for each contact",
+        "templateVarsHint": "Type a fixed value, or insert a variable like {{ vars.name }} / {{ message.text }} so each contact gets their own.",
+        "previewLabel": "Preview"
+      },
+      "nodeTypes": {
+        "starting_step": {
+          "label": "Starting Step",
+          "description": "What fires this automation."
+        },
+        "text_button": {
+          "label": "Text + Button",
+          "description": "Send a message with up to 3 tap buttons."
+        },
+        "media": {
+          "label": "Media",
+          "description": "Send an image, video, or document."
+        },
+        "audio": {
+          "label": "Audio",
+          "description": "Send a voice note or audio clip."
+        },
+        "list": {
+          "label": "List",
+          "description": "Send a message with a list menu."
+        },
+        "template": {
+          "label": "Template",
+          "description": "Send a pre-approved WhatsApp template."
+        },
+        "ask_question": {
+          "label": "Ask a Question",
+          "description": "Ask something and save the reply into a variable."
+        },
+        "whatsapp_form": {
+          "label": "WhatsApp Form",
+          "description": "Send a published WhatsApp Flow for structured input."
+        },
+        "payment": {
+          "label": "Payment",
+          "description": "Request a payment amount with a text summary."
+        },
+        "save_attribute": {
+          "label": "Save Attribute",
+          "description": "Store a value on the contact."
+        },
+        "add_tag": {
+          "label": "Add Tag",
+          "description": "Tag the contact."
+        },
+        "google_sheet": {
+          "label": "Google Sheet",
+          "description": "Append the run's data to a spreadsheet."
+        },
+        "meta_capi": {
+          "label": "Meta Conversion API",
+          "description": "Send a conversion event to Meta."
+        },
+        "time_delay": {
+          "label": "Time Delay",
+          "description": "Wait before continuing the flow."
+        },
+        "webhook": {
+          "label": "Webhook",
+          "description": "Call an external URL."
+        },
+        "condition": {
+          "label": "Condition",
+          "description": "Branch the flow on a Yes / No test."
+        }
+      },
+      "selectAction": {
+        "title": "Select Action",
+        "tabMessages": "Messages",
+        "tabActions": "Actions"
+      },
+      "canvas": {
+        "hint": "Drag from a node's dot onto empty canvas to add the next step.",
+        "syncError": "Change could not be saved",
+        "loopError": "That connection would create a loop",
+        "startingStepLocked": "The starting step cannot be deleted",
+        "noBodyYet": "no body yet",
+        "noTextYet": "no text yet",
+        "noFileYet": "no file yet",
+        "pickTemplate": "pick a template",
+        "pickFlow": "pick a flow",
+        "pickField": "pick a field",
+        "pickTag": "pick a tag",
+        "notConfigured": "not configured",
+        "noUrl": "no url",
+        "whenPrefix": "when",
+        "upload": "Upload file",
+        "uploading": "Uploading…",
+        "uploaded": "File uploaded",
+        "uploadFailed": "Upload failed",
+        "fileTooLarge": "File exceeds the {max} MB limit",
+        "conditionHint": "Connect both the Yes and the No branch before activating."
       }
     }
   },
@@ -2280,6 +2474,13 @@
     "yearlyLocked": "Your yearly plan runs until {date}.",
     "paymentProcessing": "Payment authorized - activating your plan now.",
     "checkoutCancelled": "Checkout was cancelled. Nothing was charged.",
+    "confirming": "Confirming your payment...",
+    "paymentSuccess": "Payment successful. Your {plan} plan ({cycle}) is active until {date}.",
+    "paymentNotCharged": "Payment failed. You were not charged.",
+    "checkoutClosed": "Checkout was closed before the payment finished. Nothing was charged - you can try again.",
+    "paymentReconcile": "If money was deducted, your plan will activate automatically within a few minutes. Contact support with your payment ID {paymentId}.",
+    "paymentReconcileNoId": "If money was deducted, your plan will activate automatically within a few minutes. Contact support if it does not.",
+    "retryPayment": "Try again",
     "limits": {
       "contacts": "Contacts",
       "bulk_messages": "Bulk messages",
@@ -2322,7 +2523,13 @@
     "amount": "Amount",
     "status": "Status",
     "windowMonthly": "this month",
-    "windowYearly": "this year"
+    "windowYearly": "this year",
+    "featuresTitle": "What's included in your plan",
+    "colMethod": "Method",
+    "colPaymentId": "Payment ID",
+    "checkoutSuccess": "Payment successful - your plan is active.",
+    "checkoutPending": "Confirming your payment. If money was deducted, your plan will activate automatically within a few minutes.",
+    "checkoutFailed": "Payment failed. You were not charged - you can try again."
   },
   "DashboardShell": {
     "loading": "Loading..."

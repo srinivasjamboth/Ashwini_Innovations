@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
+import { authUrl, LANDING_BRAND } from "@/lib/marketing/landing-content";
 import { isValidPhone, phoneForDb } from "@/lib/auth/phone";
 import { CheckCircle, Eye, EyeOff, Loader2, Lock, Mail, User } from "lucide-react";
 import {
@@ -34,6 +35,13 @@ function SignupPageInner() {
   // sends the verified user to /join/<token> so they land on the
   // redeem step instead of being dropped on /dashboard.
   const inviteToken = searchParams.get("invite");
+  // A visitor who chose a plan arrives here from the public checkout/billing
+  // page (or pricing) with `?plan=&billing=`. After signup we return them to
+  // that same checkout page with the plan + cycle still selected, so they can
+  // pay now that they hold a session. Absent these params, nothing about the
+  // existing signup → /dashboard flow changes.
+  const subscribePlan = searchParams.get("plan");
+  const subscribeBilling = searchParams.get("billing") === "yearly" ? "yearly" : "monthly";
   const t = useTranslations("SignupPage");
 
   const [fullName, setFullName] = useState("");
@@ -97,7 +105,9 @@ function SignupPageInner() {
     // → Redirect URLs.
     const next = inviteToken
       ? `/join/${encodeURIComponent(inviteToken)}`
-      : "/dashboard";
+      : subscribePlan
+        ? `/checkout?plan=${encodeURIComponent(subscribePlan)}&cycle=${subscribeBilling}`
+        : "/dashboard";
     const emailRedirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`;
 
     const { data, error } = await supabase.auth.signUp({
@@ -151,7 +161,7 @@ function SignupPageInner() {
           href={
             inviteToken
               ? `/login?invite=${encodeURIComponent(inviteToken)}`
-              : "/login"
+              : authUrl(LANDING_BRAND.loginHref, subscribePlan ?? undefined, subscribeBilling)
           }
           className="auth-submit-secondary"
         >
@@ -284,7 +294,7 @@ function SignupPageInner() {
           href={
             inviteToken
               ? `/login?invite=${encodeURIComponent(inviteToken)}`
-              : "/login"
+              : authUrl(LANDING_BRAND.loginHref, subscribePlan ?? undefined, subscribeBilling)
           }
           className="auth-link"
         >

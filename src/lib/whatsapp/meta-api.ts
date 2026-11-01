@@ -692,6 +692,82 @@ export async function sendMediaMessage(
   return { messageId: data.messages[0].id }
 }
 
+export interface SendFlowMessageArgs {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  /** Meta's flow name (our `whatsapp_flows.meta_flow_id`). */
+  name: string
+  /** Flow entry screen; falls back to Meta's default first screen. */
+  firstScreenId?: string
+  bodyText: string
+  headerText?: string
+  footerText?: string
+  contextMessageId?: string
+}
+
+/**
+ * Send an interactive FLOW message (WhatsApp Forms) so the recipient
+ * can open a published Flow directly from the chat — no template
+ * button required.
+ *
+ * Used by the Automations engine's `send_flow` step. The `token` is
+ * the anti-tampering value echoed back on the flow_completion webhook;
+ * we mint one per send since we collect no prefill data
+ * (`flow_action_data: {}`), and nothing correlates against it later.
+ * `mode: 'published'` always — drafts are not sendable, and the
+ * engine only resolves flows whose row carries status='published'.
+ */
+export async function sendFlowMessage(
+  args: SendFlowMessageArgs,
+): Promise<MetaSendResult> {
+  const {
+    phoneNumberId, accessToken, to, name, firstScreenId,
+    bodyText, headerText, footerText, contextMessageId,
+  } = args
+  if (!name) throw new Error('sendFlowMessage requires a flow name.')
+  if (!bodyText) throw new Error('sendFlowMessage requires a body text.')
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+
+  const header: Record<string, unknown> = { type: 'text', text: headerText }
+  const flowAction: Record<string, unknown> = {
+    type: 'navigate',
+    body: bodyText,
+    ...(footerText ? { footer: { type: 'text', text: footerText } } : {}),
+    action: 'navigate',
+    name,
+    token: crypto.randomUUID(),
+    mode: 'published',
+    ...(firstScreenId ? { first_screen_id: firstScreenId } : {}),
+    flow_action_data: {},
+  }
+  const body: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    ...recipientFields(to),
+    type: 'interactive',
+    interactive: {
+      type: 'flow',
+      header: headerText ? header : undefined,
+      action: flowAction,
+    },
+  }
+  if (contextMessageId) body.context = { message_id: contextMessageId }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = await response.json()
+  return { messageId: data.messages[0].id }
+}
+
 import type { MessageTemplate } from '@/types'
 import {
   buildSendComponents,

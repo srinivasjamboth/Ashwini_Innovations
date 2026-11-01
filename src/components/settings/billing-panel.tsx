@@ -22,25 +22,46 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { LIMIT_FEATURES, UNLIMITED, type LimitFeature } from "@/lib/plans/config";
+import {
+  FEATURE_FLAGS,
+  LIMIT_FEATURES,
+  TRIAL_DAYS,
+  UNLIMITED,
+  type FeatureFlag,
+  type LimitFeature,
+} from "@/lib/plans/config";
 import { formatCount, formatCurrency } from "@/lib/currency";
-
-interface PaymentRow {
-  id: string;
-  plan_id: string;
-  billing_cycle: string | null;
-  gateway: string | null;
-  amount: number | null;
-  currency: string | null;
-  status: string | null;
-  created_at: string | null;
-}
+import type { PaymentHistoryRow } from "@/lib/plans/orders";
 
 export function BillingPanel() {
   const t = useTranslations("Billing");
   const tp = useTranslations("Plans");
-  const { snapshot, loading, openUpgrade, isExpired } = usePlan();
-  const [payments, setPayments] = useState<PaymentRow[] | null>(null);
+  const { snapshot, loading, openUpgrade, isExpired, refresh } = usePlan();
+  const [payments, setPayments] = useState<PaymentHistoryRow[] | null>(null);
+  // A redirect / UPI-intent payment returns here as `?checkout=…` (see the
+  // callback route). Surface it and re-pull the plan so the expiry banner and
+  // disabled buttons lift without a manual reload (spec PART 3.3b / 4).
+  const [checkoutNote, setCheckoutNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    const status = new URLSearchParams(window.location.search).get("checkout");
+    if (!status) return;
+    if (status === "success" || status === "pending") void refresh();
+    // One-shot read of the callback status the redirect carried in; the value
+    // is only knowable client-side (a server render has no window.location),
+    // so it is set here after mount rather than during render — the accepted
+    // pattern in this app (see use-plan).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCheckoutNote(
+      status === "success"
+        ? t("checkoutSuccess")
+        : status === "pending"
+          ? t("checkoutPending")
+          : status === "failed"
+            ? t("checkoutFailed")
+            : null,
+    );
+  }, [refresh, t]);
 
   useEffect(() => {
     let alive = true;
@@ -48,7 +69,7 @@ export function BillingPanel() {
       try {
         const res = await fetch("/api/billing/payments", { credentials: "include" });
         if (!res.ok) return;
-        const data = (await res.json()) as { payments: PaymentRow[] };
+        const data = (await res.json()) as { payments: PaymentHistoryRow[] };
         if (alive) setPayments(data.payments);
       } catch {
         /* leave null → empty state */
@@ -80,6 +101,9 @@ export function BillingPanel() {
 
   return (
     <div className="space-y-6">
+      {checkoutNote && (
+        <p className="rounded-lg border border-border bg-muted px-3 py-2 text-sm">{checkoutNote}</p>
+      )}
       {/* Current plan */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -159,6 +183,56 @@ export function BillingPanel() {
         </CardContent>
       </Card>
 
+      {/* What's included in the current plan — the SAME figure + feature
+          list the landing pricing card shows, read from the enforced
+          entitlements so "shown == granted". Mirrors the landing so the
+          receipt/billing view is not a mystery next to the pricing page. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t("featuresTitle")}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ul className="grid gap-x-8 gap-y-2 sm:grid-cols-2">
+            {LIMIT_FEATURES.map((feature: LimitFeature) => {
+              const limit = snapshot.limits[feature];
+              if (limit === undefined) return null;
+              const unlimited = limit === UNLIMITED;
+              // The window word comes from the figure's OWN stored period,
+              // exactly as the landing card and the modal read it.
+              const period = snapshot.limitPeriods[feature];
+              const suffix = unlimited
+                ? ""
+                : period === "yearly"
+                  ? tp("perYear")
+                  : period === "monthly"
+                    ? tp("perMonth")
+                    : feature === "bulk_messages" && snapshot.effectiveStatus === "trialing"
+                      ? ` for ${TRIAL_DAYS} days`
+                      : "";
+              return (
+                <li key={feature} className="flex items-center justify-between gap-2 text-sm">
+                  <span className="text-muted-foreground">{tp(`limits.${feature}`)}</span>
+                  <span className="font-medium text-foreground">
+                    {unlimited ? tp("unlimited") : formatCount(limit)}
+                    {suffix ? (
+                      <span className="text-xs font-normal text-muted-foreground"> {suffix}</span>
+                    ) : null}
+                  </span>
+                </li>
+              );
+            })}
+            {FEATURE_FLAGS.map((flag: FeatureFlag) =>
+              snapshot.features[flag] ? (
+                <li key={flag} className="flex items-center justify-between gap-2 text-sm">
+                  <span className="text-muted-foreground">{tp(`features.${flag}`)}</span>
+                  <span className="font-medium text-foreground">✓</span>
+                </li>
+              ) : null,
+            )}
+          </ul>
+        </CardContent>
+      </Card>
+
       {/* Payment history */}
       <Card>
         <CardHeader>
@@ -177,23 +251,37 @@ export function BillingPanel() {
                     <th className="py-2 pr-4 font-medium">{t("date")}</th>
                     <th className="py-2 pr-4 font-medium">{t("plan")}</th>
                     <th className="py-2 pr-4 font-medium">{t("amount")}</th>
-                    <th className="py-2 font-medium">{t("status")}</th>
+                    <th className="py-2 pr-4 font-medium">{t("colMethod")}</th>
+                    <th className="py-2 pr-4 font-medium">{t("status")}</th>
+                    <th className="py-2 font-medium">{t("colPaymentId")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {payments.map((p) => (
                     <tr key={p.id} className="border-b last:border-0">
-                      <td className="py-2 pr-4 text-muted-foreground">{fmtDate(p.created_at)}</td>
+                      <td className="py-2 pr-4 whitespace-nowrap text-muted-foreground">{fmtDate(p.created_at)}</td>
                       <td className="py-2 pr-4">
-                        {p.plan_id}
+                        {p.plan_name ?? p.billing_cycle}
                         {p.billing_cycle === "yearly" ? (
                           <span className="ms-1 text-xs text-muted-foreground">· {tp("yearly")}</span>
                         ) : null}
                       </td>
-                      <td className="py-2 pr-4">
+                      <td className="py-2 pr-4 whitespace-nowrap">
                         {p.amount != null ? formatCurrency(p.amount, p.currency ?? "INR") : "—"}
                       </td>
-                      <td className="py-2">{p.status}</td>
+                      <td className="py-2 pr-4 capitalize text-muted-foreground">{p.payment_method ?? "—"}</td>
+                      <td className="py-2 pr-4">
+                        <span className={p.status === "paid" ? "capitalize" : "capitalize text-muted-foreground"}>
+                          {p.status}
+                        </span>
+                      </td>
+                      <td className="py-2">
+                        {p.payment_id ? (
+                          <span className="font-mono text-xs" title={p.payment_id}>{p.payment_id}</span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

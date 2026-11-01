@@ -11,10 +11,6 @@ import {
   Pencil,
   Trash2,
   FileText,
-  MessageCircle,
-  Clock,
-  Users,
-  PhoneCall,
   Loader2,
 } from "lucide-react"
 
@@ -40,23 +36,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { AUTOMATION_TEMPLATES, type TemplateSlug } from "@/lib/automations/templates"
 import { triggerMeta, formatRelative, isKnownTrigger } from "@/lib/automations/trigger-meta"
 import { cn } from "@/lib/utils"
-
-const TEMPLATE_ORDER: TemplateSlug[] = [
-  "welcome_message",
-  "out_of_office",
-  "lead_qualifier",
-  "follow_up_reminder",
-]
-
-const TEMPLATE_ICON: Record<TemplateSlug, typeof Zap> = {
-  welcome_message: MessageCircle,
-  out_of_office: Clock,
-  lead_qualifier: Users,
-  follow_up_reminder: PhoneCall,
-}
 
 export default function AutomationsPage() {
   const router = useRouter()
@@ -133,10 +114,6 @@ export default function AutomationsPage() {
     load()
   }
 
-  async function startFromTemplate(slug: TemplateSlug) {
-    router.push(`/automations/new?template=${slug}`)
-  }
-
   if (error) {
     return (
       <div className="flex h-64 flex-col items-center justify-center gap-2">
@@ -155,8 +132,6 @@ export default function AutomationsPage() {
       </div>
     )
   }
-
-  const showTemplates = automations.length < 3
 
   return (
     <div className="space-y-6">
@@ -177,31 +152,6 @@ export default function AutomationsPage() {
           {t("create")}
         </GatedButton>
       </div>
-
-      {showTemplates && (
-        <section>
-          <h2 className="mb-3 text-sm font-semibold text-muted-foreground">{t("templatesTitle")}</h2>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {TEMPLATE_ORDER.map((slug) => {
-              const t = AUTOMATION_TEMPLATES[slug]
-              const Icon = TEMPLATE_ICON[slug]
-              return (
-                <button
-                  key={slug}
-                  onClick={() => startFromTemplate(slug)}
-                  className="group flex flex-col items-start rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/50 hover:bg-card/80"
-                >
-                  <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary group-hover:bg-primary/15">
-                    <Icon className="h-5 w-5" />
-                  </div>
-                  <div className="text-sm font-semibold text-foreground">{t.name}</div>
-                  <p className="mt-1 text-xs text-muted-foreground">{t.description}</p>
-                </button>
-              )
-            })}
-          </div>
-        </section>
-      )}
 
       {automations.length === 0 ? (
         <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card/40">

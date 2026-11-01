@@ -3,6 +3,10 @@
     {
       "path": "/api/whatsapp/broadcast/scheduled/cron",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/billing/cron",
+      "schedule": "*/10 * * * *"
     }
   ]
 }

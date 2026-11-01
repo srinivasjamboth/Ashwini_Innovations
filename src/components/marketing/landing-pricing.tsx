@@ -180,6 +180,7 @@ function toLandingPlan(plan: PlanCard): LandingPlan {
   };
   const trial = !plan.isPaid;
   return {
+    id: plan.id,
     name: plan.tagline && trial ? "7-Day Free Trial" : plan.name,
     tagline: plan.tagline ?? "",
     monthly: priceFor("monthly"),
@@ -300,6 +301,21 @@ export function LandingPricing() {
                     "Yearly billing is not available for this plan yet";
                   const showNote =
                     showYearly && !trial && plan.yearlyAvailable === false;
+                  // The cycle the CTA actually buys: yearly only when the
+                  // toggle is on AND this plan has a real yearly offer,
+                  // otherwise monthly (the card is showing monthly figures).
+                  const effectiveCycle: "monthly" | "yearly" =
+                    showYearly && !showNote ? "yearly" : "monthly";
+                  // Subscribe opens the public billing/checkout page for the
+                  // chosen plan + cycle — exactly like any other SaaS: the
+                  // visitor sees the order summary and pays there. No login,
+                  // no inline checkout, nothing else. A middle-click, keyboard
+                  // open or no-JS visit all land on the same billing page.
+                  // The trial card has nothing to buy, so it stays a signup.
+                  const ctaHref =
+                    trial || !plan.id
+                      ? LANDING_BRAND.signupHref
+                      : `/checkout?plan=${encodeURIComponent(plan.id)}&cycle=${effectiveCycle}`;
 
                   return (
                     <div className="col-lg-3 col-md-6" key={plan.name}>
@@ -360,7 +376,7 @@ export function LandingPricing() {
                             </div>
                           ))}
                           <a
-                            href={LANDING_BRAND.signupHref}
+                            href={ctaHref}
                             title={showNote ? unavailableNote : undefined}
                             className={`btn btn-${plan.tone}-gradient rounded-pill py-2 px-4 mt-4`}
                           >

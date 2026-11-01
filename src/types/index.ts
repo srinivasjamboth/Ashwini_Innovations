@@ -647,7 +647,14 @@ export type AutomationStepType =
   | 'wait'
   | 'condition'
   | 'send_webhook'
-  | 'close_conversation';
+  | 'close_conversation'
+  // Graph-compiler step types (migration 055 canvas builder).
+  | 'send_media'
+  | 'send_flow'
+  | 'capture_reply'
+  | 'google_sheet'
+  | 'meta_capi'
+  | 'noop';
 
 export type AutomationLogStatus = 'success' | 'partial' | 'failed';
 
@@ -703,7 +710,20 @@ export type SendListStepConfig = InteractiveMessagePayload;
 export interface SendTemplateStepConfig {
   template_name: string;
   language?: string;
+  /**
+   * @deprecated Legacy positional map ({"1": "value", ...}). Still read at
+   * send time for automations authored before structured slots; new authoring
+   * writes `body` / `headerText` / `buttonParams`.
+   */
   variables?: Record<string, string>;
+  /** Body {{1}}, {{2}}, … values in positional order. Each may embed
+   *  `{{ vars.x }}` / `{{ message.text }}` for per-contact interpolation. */
+  body?: string[];
+  /** Value for a TEXT header that carries {{1}}. */
+  headerText?: string;
+  /** Send-time overrides keyed by button index (URL buttons with a
+   *  variable suffix, COPY_CODE overrides). */
+  buttonParams?: Record<string, string>;
 }
 
 export interface TagStepConfig {
@@ -756,8 +776,46 @@ export interface ConditionStepConfig {
 
 export interface SendWebhookStepConfig {
   url: string;
+  /** Graph-webhook nodes carry the verb; the engine defaults to POST. */
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   headers?: Record<string, string>;
   body_template?: string;
+}
+
+// ------------------------------------------------------------
+// Graph-compiler step types (migration 055). These are produced by
+// compileGraphToSteps from canvas palette nodes; `automation_steps`
+// rows for hand-authored (pre-canvas) automations never carried them.
+// ------------------------------------------------------------
+
+export interface SendMediaStepConfig {
+  kind: 'image' | 'video' | 'audio' | 'document';
+  /** Public URL of the uploaded media (storage/CDN link). */
+  link: string;
+  caption?: string;
+  filename?: string;
+}
+
+export interface SendFlowStepConfig {
+  /** Published WhatsApp Flow id (GET /api/whatsapp-flows/published). */
+  flow_id: string;
+}
+
+export interface CaptureReplyStepConfig {
+  /** Question text sent to the contact before parking the run. */
+  text: string;
+  /** Reply is stored under `vars.<variable>` for {{ vars.* }} interpolation. */
+  variable: string;
+}
+
+export interface GoogleSheetStepConfig {
+  spreadsheet: string;
+  mapping: { column: string; value: string }[];
+}
+
+export interface MetaCapiStepConfig {
+  event_type: string;
+  custom_data: { key: string; value: string }[];
 }
 
 export type AutomationStepConfig =
@@ -772,6 +830,11 @@ export type AutomationStepConfig =
   | WaitStepConfig
   | ConditionStepConfig
   | SendWebhookStepConfig
+  | SendMediaStepConfig
+  | SendFlowStepConfig
+  | CaptureReplyStepConfig
+  | GoogleSheetStepConfig
+  | MetaCapiStepConfig
   | Record<string, never>
   | Record<string, unknown>;
 
