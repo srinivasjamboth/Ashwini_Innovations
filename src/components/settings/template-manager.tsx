@@ -7,6 +7,7 @@ import {
   Loader2,
   RefreshCw,
   AlertCircle,
+  CheckCircle2,
   X,
   Upload,
   ExternalLink,
@@ -30,6 +31,7 @@ import { useTranslations } from 'next-intl';
 import { Card, CardContent } from '@/components/ui/card';
 import { SettingsPanelHead } from './settings-panel-head';
 import { CarouselEditor } from './carousel-editor';
+import RunwayLoader from './runway-loader';
 import { TemplatePreview } from './template-preview';
 import { TemplateTableView } from './template-table-view';
 import { TemplateViewDialog } from './template-view-dialog';
@@ -162,7 +164,25 @@ export function TemplateManager() {
   const [loading, setLoading] = useState(true);
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  // Runway submit flow (this page only): the plane rolls while the
+  // request is in flight, sprints to 100% and takes off when Meta
+  // accepts the template — the success message then appears ON the page
+  // (approvalBanner, replacing the old popup toast) — and freezes where
+  // it is with the error shown in the dialog when it is rejected.
+  const [submitPhase, setSubmitPhase] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+  // Bumping this key gives a retry a fresh runway starting at 0%.
+  const [submitAttempt, setSubmitAttempt] = useState(0);
+  const [approvalBanner, setApprovalBanner] = useState<string | null>(null);
+
+  // The page-level confirmation fades on its own — the table it sits
+  // above is already refreshed, so it confirms rather than informs.
+  useEffect(() => {
+    if (!approvalBanner) return;
+    const id = window.setTimeout(() => setApprovalBanner(null), 6000);
+    return () => window.clearTimeout(id);
+  }, [approvalBanner]);
   const [syncing, setSyncing] = useState(false);
   const [form, setForm] = useState<TemplateFormData>(emptyForm);
   // Non-null when the dialog is editing an existing row — switches the
@@ -493,9 +513,11 @@ export function TemplateManager() {
       return;
     }
 
+    const isEdit = editingId !== null;
+    setSubmitError(null);
+    setSubmitAttempt((a) => a + 1);
+    setSubmitPhase('running');
     try {
-      setSubmitting(true);
-      const isEdit = editingId !== null;
       const url = isEdit
         ? `/api/whatsapp/templates/${editingId}`
         : '/api/whatsapp/templates/submit';
@@ -510,16 +532,18 @@ export function TemplateManager() {
           data?.error ||
           t(isEdit ? 'editFailedHttp' : 'submitFailedHttp', { status: res.status });
         // 4xx responses are expected (validation / config / user input) —
-        // surface them as a toast only. Reserve console.error for genuine
-        // server faults so normal validation doesn't trip the dev overlay.
+        // the stopped plane and the inline error carry them now. Reserve
+        // console.error for genuine server faults so normal validation
+        // doesn't trip the dev overlay.
         if (res.status >= 500) console.error('Submit failed:', message);
-        toast.error(message);
+        setSubmitError(message);
+        setSubmitPhase('failed');
         return;
       }
-      // Refresh first, then close — re-opening the dialog
+      // Refresh first — re-opening the dialog
       // immediately should not show a stale list.
       if (user) await fetchTemplates(user.id);
-      toast.success(
+      setSubmitSuccess(
         data.dry_run
           ? isEdit
             ? t('toastSaveEditDry')
@@ -528,16 +552,29 @@ export function TemplateManager() {
             ? t('toastSubmitEditSuccess')
             : t('toastSubmitNewSuccess'),
       );
-      setDialogOpen(false);
-      setForm(emptyForm);
-      setEditingId(null);
+      // The loader finishes its sprint + take-off, then
+      // finalizeSubmitSuccess() closes the dialog and shows the message.
+      setSubmitPhase('done');
     } catch (err) {
       // Network / unexpected failure — worth logging.
       console.error('Submit error:', err);
-      toast.error(err instanceof Error ? err.message : t('toastSubmitFailed'));
-    } finally {
-      setSubmitting(false);
+      setSubmitError(err instanceof Error ? err.message : t('toastSubmitFailed'));
+      setSubmitPhase('failed');
     }
+  }
+
+  /** Runway loader calls this once the plane has taken off ("done"). */
+  function finalizeSubmitSuccess() {
+    setDialogOpen(false);
+    setForm(emptyForm);
+    setEditingId(null);
+    setCarouselActiveCard(0);
+    setSubmitPhase('idle');
+    // Fall back to the standard confirmation: if the dialog was closed
+    // mid-take-off and its cleanup cleared the stored message, the
+    // submission still succeeded and the page must say so.
+    setApprovalBanner(submitSuccess ?? t('toastSubmitNewSuccess'));
+    setSubmitSuccess(null);
   }
 
   async function handleSyncFromMeta() {
@@ -874,14 +911,32 @@ export function TemplateManager() {
         accountName={account?.name ?? ''}
       />
 
+      {/* Submit-for-approval confirmation shown on the page itself —
+          this replaces the old top-of-screen popup toast. */}
+      {approvalBanner && (
+        <div
+          role="status"
+          className="animate-in fade-in slide-in-from-top-1 mb-4 flex items-start gap-2 rounded border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-300 duration-300"
+        >
+          <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
+          <p>{approvalBanner}</p>
+        </div>
+      )}
+
       <Dialog
         open={dialogOpen}
         onOpenChange={(open) => {
+          // Closing mid-roll would abandon the finish line — the request
+          // is already with Meta — so the dialog holds until the loader
+          // reports back: success (finalize closes it) or failure.
+          if (!open && (submitPhase === 'running' || submitPhase === 'done')) return;
           setDialogOpen(open);
           if (!open) {
             setEditingId(null);
             setForm(emptyForm);
             setCarouselActiveCard(0);
+            setSubmitPhase('idle');
+            setSubmitError(null);
           }
         }}
       >
@@ -1459,36 +1514,77 @@ export function TemplateManager() {
           </div>
 
           <DialogFooter className="bg-popover border-border">
-            <Button
-              variant="outline"
-              onClick={() => setDialogOpen(false)}
-              className="border-border text-muted-foreground hover:bg-muted"
-            >
-              {t('cancel')}
-            </Button>
-            <Button
-              onClick={handleSubmit}
-              disabled={
-                submitting ||
-                form.category === 'Authentication' ||
-                // A carousel only submits once every card passes the same
-                // rules the server enforces — the summary above lists what
-                // is still missing.
-                (isCarousel && carouselIssues.length > 0)
-              }
-              className="bg-primary hover:bg-primary/90 text-primary-foreground"
-            >
-              {submitting ? (
-                <>
-                  <Loader2 className="size-4 animate-spin" />
-                  {editingId ? t('saving') : t('submitting')}
-                </>
-              ) : editingId ? (
-                t('saveResubmit')
-              ) : (
-                t('submitApproval')
-              )}
-            </Button>
+            {submitPhase === 'running' || submitPhase === 'done' ? (
+              // The runway replaces the buttons while the request runs —
+              // nothing else is clickable, so no double-submit.
+              <div className="w-full">
+                <RunwayLoader
+                  key={submitAttempt}
+                  phase={submitPhase === 'done' ? 'done' : 'running'}
+                  labels={{ preparing: t('runwayPreparing'), takingOff: t('runwayTakingOff') }}
+                  onDone={finalizeSubmitSuccess}
+                />
+              </div>
+            ) : submitPhase === 'failed' ? (
+              <div className="w-full space-y-3">
+                <RunwayLoader
+                  key={submitAttempt}
+                  phase="failed"
+                  labels={{ preparing: t('runwayPreparing'), takingOff: t('runwayTakingOff') }}
+                />
+                {/* The rejection reads on the page itself — Meta's own
+                    message verbatim when it sent one. */}
+                <p role="alert" className="text-left text-sm text-destructive">
+                  {submitError}
+                </p>
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setDialogOpen(false);
+                      setSubmitPhase('idle');
+                      setSubmitError(null);
+                    }}
+                    className="border-border text-muted-foreground hover:bg-muted"
+                  >
+                    {t('cancel')}
+                  </Button>
+                  <Button
+                    onClick={handleSubmit}
+                    disabled={
+                      form.category === 'Authentication' ||
+                      (isCarousel && carouselIssues.length > 0)
+                    }
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground"
+                  >
+                    {editingId ? t('saveResubmit') : t('submitApproval')}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => setDialogOpen(false)}
+                  className="border-border text-muted-foreground hover:bg-muted"
+                >
+                  {t('cancel')}
+                </Button>
+                <Button
+                  onClick={handleSubmit}
+                  disabled={
+                    form.category === 'Authentication' ||
+                    // A carousel only submits once every card passes the same
+                    // rules the server enforces — the summary above lists what
+                    // is still missing.
+                    (isCarousel && carouselIssues.length > 0)
+                  }
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground"
+                >
+                  {editingId ? t('saveResubmit') : t('submitApproval')}
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -496,3 +496,22 @@ html[data-admin="1"] {
     animation: none !important;
   }
 }
+
+/* ------------------------------------------------------------
+ * Groups-tab folder tiles (design PART 3). Each tile carries BOTH
+ * theme tone sets as inline custom properties from GROUP_COLORS;
+ * this bridge picks the right set from the mode attribute on <html>
+ * (set by the theme boot script + use-theme), so folders restyle
+ * instantly with the theme and never need a JS mode read.
+ * ------------------------------------------------------------ */
+.group-folder {
+  --folder-back: var(--folder-back-l);
+  --folder-front: var(--folder-front-l);
+  --folder-tab: var(--folder-tab-l);
+}
+
+html[data-mode="dark"] .group-folder {
+  --folder-back: var(--folder-back-d);
+  --folder-front: var(--folder-front-d);
+  --folder-tab: var(--folder-tab-d);
+}

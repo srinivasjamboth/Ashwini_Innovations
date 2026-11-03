@@ -40,6 +40,8 @@
  */
 
 import { useCallback, useEffect, useSyncExternalStore, useState } from "react";
+import { motion } from "framer-motion";
+import NumberFlow from "@number-flow/react";
 
 import { LandingIcon, ICON_SIZE } from "@/components/marketing/landing-icons";
 import { cardLimitPeriods, cardLimits, type PlanCard } from "@/lib/plans/catalog";
@@ -261,18 +263,36 @@ export function LandingPricing() {
         <div className="tab-class text-center pricing wow fadeInUp" data-wow-delay="0.1s">
           {yearlyOn && (
             <ul className="nav nav-pills d-inline-flex justify-content-center bg-primary-gradient rounded-pill mb-5">
-              {LANDING_BILLING_PERIODS.map((option) => (
-                <li className="nav-item" key={option.key}>
-                  <button
-                    type="button"
-                    className={`nav-link ${option.key === (showYearly ? "yearly" : "monthly") ? "active" : ""}`}
-                    aria-pressed={option.key === (showYearly ? "yearly" : "monthly")}
-                    onClick={() => choosePeriod(option.key)}
-                  >
-                    {option.label}
-                  </button>
-                </li>
-              ))}
+              {LANDING_BILLING_PERIODS.map((option) => {
+                const isActive = option.key === (showYearly ? "yearly" : "monthly");
+                return (
+                  <li className="nav-item" key={option.key}>
+                    <button
+                      type="button"
+                      className={`nav-link ${isActive ? "active" : ""}`}
+                      aria-pressed={isActive}
+                      onClick={() => choosePeriod(option.key)}
+                      // The active fill is painted by the sliding pill below,
+                      // not the button's own background — the pill carries the
+                      // identical bg-primary-gradient, so the resting look is
+                      // byte-identical to the static CSS ever was.
+                      style={{ position: "relative", ...(isActive ? { background: "transparent" } : null) }}
+                    >
+                      {isActive && (
+                        <motion.span
+                          layoutId="pricing-period-pill"
+                          className="position-absolute top-0 start-0 w-100 h-100 rounded-pill bg-primary-gradient"
+                          style={{ zIndex: 0 }}
+                          transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                        />
+                      )}
+                      <span className="position-relative" style={{ zIndex: 1 }}>
+                        {option.label}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
 
@@ -292,6 +312,16 @@ export function LandingPricing() {
                   const bullets =
                     yearlyShown && plan.yearlyIncludes ? plan.yearlyIncludes : plan.includes;
                   const price = yearlyShown ? plan.yearly : plan.monthly;
+                  // The price stays the SAME formatted figure the card always
+                  // showed — NumberFlow only animates the transition between
+                  // monthly and yearly. `price` is an integer display string
+                  // from `formatCount` (grouping separators only, no decimals
+                  // or currency), so stripping non-digits recovers the exact
+                  // number; anything unexpected falls back to plain text so a
+                  // number can never be misrendered by the animation.
+                  const priceDigits = price.replace(/[^0-9]/g, "");
+                  const priceNumber =
+                    priceDigits === "" ? Number.NaN : Number(priceDigits);
                   const suffix = trial
                     ? ` / ${TRIAL_DAYS} days`
                     : yearlyShown
@@ -344,7 +374,11 @@ export function LandingPricing() {
                             >
                               {LANDING_CURRENCY}
                             </small>
-                            {price}
+                            {Number.isFinite(priceNumber) ? (
+                              <NumberFlow value={priceNumber} format={{ maximumFractionDigits: 0 }} />
+                            ) : (
+                              price
+                            )}
                             <small
                               className="align-bottom"
                               style={{ fontSize: 16, lineHeight: "40px" }}

@@ -1,5 +1,11 @@
 import { createClient } from '@/lib/supabase/client';
 import { isUniqueViolation } from '@/lib/contacts/dedupe';
+import {
+  legacyFilterToConditions,
+  sanitizeConditions,
+  type ContactFilterCondition,
+} from '@/lib/contacts/contact-filter';
+import type { GroupColorKey } from '@/lib/contacts/group-colors';
 import type { Contact, ContactGroup } from '@/types';
 
 type SupabaseClient = ReturnType<typeof createClient>;
@@ -57,6 +63,7 @@ export async function listGroups(
       account_id: row.account_id,
       name: row.name,
       description: row.description,
+      color: row.color ?? null,
       created_by: row.created_by,
       created_at: row.created_at,
       updated_at: row.updated_at,
@@ -108,7 +115,7 @@ export async function getGroup(
 
 export async function createGroup(
   supabase: SupabaseClient,
-  input: { accountId: string; name: string; description?: string }
+  input: { accountId: string; name: string; description?: string; color?: GroupColorKey | null }
 ): Promise<ContactGroup> {
   const name = normalizeGroupName(input.name);
   const {
@@ -120,6 +127,7 @@ export async function createGroup(
       account_id: input.accountId,
       name,
       description: input.description?.trim().slice(0, GROUP_DESCRIPTION_MAX) || null,
+      color: input.color ?? null,
       created_by: session?.user.id ?? null,
     })
     .select()
@@ -135,7 +143,7 @@ export async function createGroup(
 export async function updateGroup(
   supabase: SupabaseClient,
   groupId: string,
-  input: { name: string; description?: string }
+  input: { name: string; description?: string; color?: GroupColorKey | null }
 ): Promise<ContactGroup> {
   const name = normalizeGroupName(input.name);
   const { data, error } = await supabase
@@ -143,6 +151,7 @@ export async function updateGroup(
     .update({
       name,
       description: input.description?.trim().slice(0, GROUP_DESCRIPTION_MAX) || null,
+      ...(input.color === undefined ? {} : { color: input.color }),
       updated_at: new Date().toISOString(),
     })
     .eq('id', groupId)
@@ -207,22 +216,19 @@ export async function addGroupMembersByIds(
 }
 
 /** "All contacts matching the current filters", resolved server-side in
- *  one statement so it works across pages and thousands of rows. */
+ *  one statement so it works across pages and thousands of rows. The
+ *  legacy tag/group dimensions map onto the shared condition model and
+ *  go through the same filtered endpoint the group builder uses
+ *  (migration 060) — one add path for every "add by filter" UI. */
 export async function addGroupMembersByFilter(
   supabase: SupabaseClient,
   groupId: string,
   filter: { groupIds?: string[]; tagIds?: string[]; search?: string }
 ): Promise<number> {
-  const { data, error } = await supabase.rpc('add_group_members', {
-    p_group_id: groupId,
-    p_filter_group_ids:
-      filter.groupIds && filter.groupIds.length > 0 ? filter.groupIds : null,
-    p_filter_tag_ids:
-      filter.tagIds && filter.tagIds.length > 0 ? filter.tagIds : null,
-    p_search: filter.search?.trim() || null,
+  return addGroupMembersFiltered(supabase, groupId, {
+    conditions: legacyFilterToConditions(filter),
+    search: filter.search,
   });
-  if (error) throw new Error(error.message);
-  return Number(data ?? 0);
 }
 
 export async function removeGroupMembers(
@@ -361,4 +367,150 @@ export async function syncContactGroups(
       );
     if (error) throw new Error(error.message);
   }
+}
+
+// ============================================================
+// Filter-based member adds (spec PART 4) — thin wrappers over the
+// migration 060 RPCs. Conditions are re-sanitized here at the edge,
+// so even a hand-edited caller can only ever send whitelisted
+// field/op/value triples to the server's CASE dispatch.
+// ============================================================
+
+/** Runs above this count go through the resumable job path. */
+export const BACKGROUND_ADD_THRESHOLD = 5000;
+/** Contacts inserted per job chunk RPC call. */
+export const ADD_JOB_CHUNK = 2000;
+
+export interface GroupFilterInput {
+  conditions: ContactFilterCondition[];
+  search?: string;
+}
+
+function filterRpcArgs(input: GroupFilterInput) {
+  return {
+    // PostgREST re-encodes this value as the jsonb parameter. It MUST
+    // stay a real array — JSON.stringify() would make the server see
+    // a jsonb string *scalar* and jsonb_to_recordset() rejects it
+    // ("cannot call jsonb_to_recordset on a non-array").
+    p_conditions: sanitizeConditions(input.conditions),
+    p_search: input.search?.trim() || null,
+  };
+}
+
+/** Live preview counts: match / already in group / will be added. */
+export async function previewGroupAdd(
+  supabase: SupabaseClient,
+  groupId: string,
+  input: GroupFilterInput
+): Promise<{ matchCount: number; alreadyCount: number; newCount: number }> {
+  const { data, error } = await supabase.rpc('preview_group_add', {
+    p_group_id: groupId,
+    ...filterRpcArgs(input),
+  });
+  if (error) throw new Error(error.message);
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { match_count: number; already_count: number; new_count: number }
+    | undefined;
+  return {
+    matchCount: Number(row?.match_count ?? 0),
+    alreadyCount: Number(row?.already_count ?? 0),
+    newCount: Number(row?.new_count ?? 0),
+  };
+}
+
+/** First matching contacts, for the preview list + the untick UI. */
+export async function matchContacts(
+  supabase: SupabaseClient,
+  input: GroupFilterInput,
+  opts: { limit?: number; offset?: number } = {}
+): Promise<{ contacts: Contact[]; total: number }> {
+  const { data, error } = await supabase.rpc('match_contacts', {
+    ...filterRpcArgs(input),
+    p_limit: opts.limit ?? 5,
+    p_offset: opts.offset ?? 0,
+  });
+  if (error) throw new Error(error.message);
+  const rows = (data ?? []) as { contact: Contact; total_count: number }[];
+  return {
+    contacts: rows.map((r) => r.contact),
+    total: rows.length > 0 ? Number(rows[0].total_count) : 0,
+  };
+}
+
+/** One-shot filtered add — the shared endpoint for the Contacts tab's
+ *  "select all N matching" and small group-detail runs. Returns the
+ *  number of NEW memberships actually created (idempotent). */
+export async function addGroupMembersFiltered(
+  supabase: SupabaseClient,
+  groupId: string,
+  input: GroupFilterInput,
+  excludedIds: string[] = []
+): Promise<number> {
+  const { data, error } = await supabase.rpc('add_group_members_filtered', {
+    p_group_id: groupId,
+    ...filterRpcArgs(input),
+    p_excluded: excludedIds.length > 0 ? excludedIds : null,
+  });
+  if (error) throw new Error(error.message);
+  return Number(data ?? 0);
+}
+
+export interface GroupAddJob {
+  jobId: string;
+  added: number;
+  target: number;
+}
+
+/** Snapshot the filter server-side for a resumable chunked run. */
+export async function startGroupAddJob(
+  supabase: SupabaseClient,
+  groupId: string,
+  input: GroupFilterInput,
+  excludedIds: string[] = []
+): Promise<string> {
+  const { data, error } = await supabase.rpc('start_group_add_job', {
+    p_group_id: groupId,
+    ...filterRpcArgs(input),
+    p_excluded: excludedIds.length > 0 ? excludedIds : null,
+  });
+  if (error) throw new Error(error.message);
+  return String(data);
+}
+
+/** Add one chunk of a job. Re-derives the still-missing set, so a
+ *  resumed client after a refresh simply keeps calling this. */
+export async function runGroupAddJobChunk(
+  supabase: SupabaseClient,
+  jobId: string,
+  chunk = ADD_JOB_CHUNK
+): Promise<{ added: number; remaining: number; status: 'running' | 'done' }> {
+  const { data, error } = await supabase.rpc('run_group_add_job_chunk', {
+    p_job_id: jobId,
+    p_chunk: chunk,
+  });
+  if (error) throw new Error(error.message);
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { added: number; remaining: number; status: string }
+    | undefined;
+  return {
+    added: Number(row?.added ?? 0),
+    remaining: Number(row?.remaining ?? 0),
+    status: row?.status === 'done' ? 'done' : 'running',
+  };
+}
+
+/** The live job for this group, if any — the resume lookup on mount. */
+export async function getActiveGroupAddJob(
+  supabase: SupabaseClient,
+  groupId: string
+): Promise<GroupAddJob | null> {
+  const { data, error } = await supabase.rpc('get_active_group_add_job', {
+    p_group_id: groupId,
+  });
+  if (error) throw new Error(error.message);
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { job_id: string; added: number; target: number }
+    | undefined;
+  if (!row) return null;
+  return { jobId: String(row.job_id), added: Number(row.added), target: Number(row.target ?? 0) };
 }

@@ -9,14 +9,21 @@ import { useTranslations } from 'next-intl';
 import type { Contact, ContactGroup } from '@/types';
 import {
   deleteGroup,
+  getActiveGroupAddJob,
   getGroup,
   listGroupMembers,
   removeGroupMembers,
+  runGroupAddJobChunk,
 } from '@/lib/contacts/group-api';
+import { resolveGroupColor } from '@/lib/contacts/group-colors';
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { GroupFormDialog } from '@/components/contacts/groups/group-form-dialog';
 import { AddMembersDialog } from '@/components/contacts/groups/add-members-dialog';
+import {
+  AddByFilterPanel,
+} from '@/components/contacts/groups/add-by-filter-panel';
+import { FolderPreview } from '@/components/contacts/groups/group-folder-tile';
 import { ContactDetailView } from '@/components/contacts/contact-detail-view';
 import { Pagination } from '@/components/admin/pagination';
 import { Button } from '@/components/ui/button';
@@ -40,11 +47,11 @@ import {
 } from '@/components/ui/dialog';
 import {
   ArrowLeft,
-  FolderClosed,
   Loader2,
   Megaphone,
   Pencil,
   Search,
+  SlidersHorizontal,
   Trash2,
   UserPlus,
   Users,
@@ -72,12 +79,23 @@ export default function GroupDetailPage() {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [addOpen, setAddOpen] = useState(false);
+  const [addFilterOpen, setAddFilterOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteGroupOpen, setDeleteGroupOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [deletingGroup, setDeletingGroup] = useState(false);
   const [detailContactId, setDetailContactId] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+
+  // Resumable background add (spec PART 4): a >5,000 run started from
+  // the panel survives a refresh — the live job row is picked up here
+  // and chunked onward.
+  const [activeJob, setActiveJob] = useState<{
+    jobId: string;
+    added: number;
+    target: number;
+  } | null>(null);
+  const [jobRunning, setJobRunning] = useState(false);
 
   const fetchSeq = useRef(0);
 
@@ -197,6 +215,43 @@ export default function GroupDetailPage() {
     }
   }
 
+  const checkActiveJob = useCallback(async () => {
+    if (!groupId) return;
+    try {
+      const job = await getActiveGroupAddJob(supabase, groupId);
+      setActiveJob(job && job.target > 0 && job.added < job.target ? job : null);
+    } catch {
+      /* banner is best-effort */
+    }
+  }, [supabase, groupId]);
+
+  useEffect(() => {
+    checkActiveJob();
+  }, [checkActiveJob]);
+
+  async function continueActiveJob() {
+    if (!activeJob || jobRunning) return;
+    setJobRunning(true);
+    try {
+      let acc = activeJob.added;
+      for (;;) {
+        const res = await runGroupAddJobChunk(supabase, activeJob.jobId);
+        acc += res.added;
+        setActiveJob((j) =>
+          j ? { ...j, added: acc, target: acc + res.remaining } : j
+        );
+        if (res.status === 'done') break;
+      }
+      toast.success(t('toastJobDone', { count: acc }));
+      setActiveJob(null);
+      refreshAll();
+    } catch {
+      toast.error(t('toastJobFailed'));
+    } finally {
+      setJobRunning(false);
+    }
+  }
+
   if (groupLoading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -233,9 +288,11 @@ export default function GroupDetailPage() {
             {t('backToGroups')}
           </Link>
           <div className="flex items-center gap-2.5">
-            <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10">
-              <FolderClosed className="size-5 text-primary" />
-            </div>
+            {/* the group's folder, in its chosen shade (spec PART 3) */}
+            <FolderPreview
+              colorKey={resolveGroupColor(group.color, group.id)}
+              className="h-8 w-10 shrink-0"
+            />
             <div>
               <h1 className="text-2xl font-bold text-foreground">{group.name}</h1>
               <p className="text-sm text-muted-foreground">
@@ -278,6 +335,15 @@ export default function GroupDetailPage() {
             <UserPlus className="size-4" />
             {t('addMembersBtn')}
           </Button>
+          <Button
+            variant="outline"
+            onClick={() => setAddFilterOpen(true)}
+            className="border-border text-muted-foreground hover:bg-muted"
+            disabled={!canEdit}
+          >
+            <SlidersHorizontal className="size-4" />
+            {t('addByFilterBtn')}
+          </Button>
           <Link href={`/broadcasts/new?groupIds=${group.id}`}>
             <Button className="bg-primary hover:bg-primary/90 text-primary-foreground">
               <Megaphone className="size-4" />
@@ -286,6 +352,45 @@ export default function GroupDetailPage() {
           </Link>
         </div>
       </div>
+
+      {/* Background add-by-filter job left over from a refresh — shows
+          progress and can carry the chunked run to the end. */}
+      {activeJob && !addFilterOpen && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-4 rounded-lg border border-border bg-muted/40 px-4 py-2"
+        >
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-sm text-foreground">
+              {t('jobBanner', {
+                added: activeJob.added.toLocaleString(),
+                target: activeJob.target.toLocaleString(),
+              })}
+            </p>
+            <div
+              className="h-1.5 w-full overflow-hidden rounded bg-border"
+              aria-hidden
+            >
+              <div
+                className="h-full rounded bg-primary transition-[width] duration-200"
+                style={{
+                  width: `${activeJob.target > 0 ? Math.min(100, (activeJob.added / activeJob.target) * 100) : 0}%`,
+                }}
+              />
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={continueActiveJob}
+            disabled={jobRunning}
+            className="border-border text-muted-foreground hover:bg-muted"
+          >
+            {jobRunning && <Loader2 className="size-3.5 animate-spin" />}
+            {jobRunning ? t('jobRunning') : t('jobContinue')}
+          </Button>
+        </div>
+      )}
 
       {/* Search */}
       <div className="relative w-full max-w-sm">
@@ -451,6 +556,18 @@ export default function GroupDetailPage() {
       <AddMembersDialog
         open={addOpen}
         onOpenChange={setAddOpen}
+        groupId={group.id}
+        groupName={group.name}
+        onAdded={refreshAll}
+      />
+
+      {/* Add members by filter (spec PART 4) */}
+      <AddByFilterPanel
+        open={addFilterOpen}
+        onOpenChange={(next) => {
+          setAddFilterOpen(next);
+          if (!next) checkActiveJob();
+        }}
         groupId={group.id}
         groupName={group.name}
         onAdded={refreshAll}

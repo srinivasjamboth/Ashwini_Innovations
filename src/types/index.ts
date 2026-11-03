@@ -161,6 +161,10 @@ export interface ContactGroup {
   name: string;
   /** Optional, max 200 chars. */
   description?: string | null;
+  /** Palette key for the Groups-tab folder (migration 060). Null on
+   *  rows that predate colors — the grid renders a deterministic
+   *  default shade derived from the id. */
+  color?: string | null;
   created_by?: string | null;
   created_at: string;
   updated_at: string;

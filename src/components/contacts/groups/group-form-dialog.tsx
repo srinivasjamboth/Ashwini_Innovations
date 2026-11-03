@@ -14,6 +14,14 @@ import {
   updateGroup,
 } from '@/lib/contacts/group-api';
 import {
+  GROUP_COLORS,
+  folderToneVars,
+  resolveGroupColor,
+  type GroupColorKey,
+} from '@/lib/contacts/group-colors';
+import { FolderPreview } from '@/components/contacts/groups/group-folder-tile';
+import { cn } from '@/lib/utils';
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -49,12 +57,16 @@ export function GroupFormDialog({
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [color, setColor] = useState<GroupColorKey>('sea');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (open) {
       setName(group?.name ?? '');
       setDescription(group?.description ?? '');
+      // Existing groups show their stored shade — or the same
+      // deterministic default the grid renders when color is NULL.
+      setColor(resolveGroupColor(group?.color ?? null, group?.id ?? ''));
     }
   }, [open, group]);
 
@@ -76,11 +88,13 @@ export function GroupFormDialog({
         ? await updateGroup(supabase, group.id, {
             name: trimmed,
             description,
+            color,
           })
         : await createGroup(supabase, {
             accountId,
             name: trimmed,
             description,
+            color,
           });
       toast.success(isEdit ? t('toastUpdated') : t('toastCreated'));
       onOpenChange(false);
@@ -140,6 +154,45 @@ export function GroupFormDialog({
               placeholder={t('descPlaceholder')}
               className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
             />
+          </div>
+
+          {/* Folder color — palette keys only; the DB CHECK mirrors
+              GROUP_COLORS, and NULL rows render the id default. */}
+          <div className="space-y-2">
+            <Label className="text-muted-foreground">{t('colorLabel')}</Label>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap gap-1.5">
+                {GROUP_COLORS.map((def) => (
+                  <button
+                    key={def.key}
+                    type="button"
+                    onClick={() => setColor(def.key)}
+                    aria-label={def.label}
+                    aria-pressed={color === def.key}
+                    title={def.label}
+                    className={cn(
+                      'group-folder size-7 rounded-full border border-border outline-none transition-transform',
+                      'focus-visible:ring-2 focus-visible:ring-ring',
+                      color === def.key
+                        ? 'ring-2 ring-ring ring-offset-2 ring-offset-background'
+                        : 'hover:scale-110'
+                    )}
+                    style={folderToneVars(def.key)}
+                  >
+                    <span
+                      className="block size-full rounded-full"
+                      style={{ background: 'var(--folder-front)' }}
+                    />
+                  </button>
+                ))}
+              </div>
+              {/* live preview of the chosen shade */}
+              <FolderPreview
+                colorKey={color}
+                className="ml-auto aspect-[4/3] w-16"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">{t('colorHint')}</p>
           </div>
 
           <DialogFooter className="bg-popover border-border">
