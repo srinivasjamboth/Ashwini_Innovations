@@ -287,6 +287,41 @@ export function isCarouselCardComplete(
   return collectCardIssues(data, card, index).length === 0;
 }
 
+/**
+ * Extension aliases Meta accepts for media headers. The stored object
+ * keeps the uploaded file's original extension, so `photo.jpeg` must
+ * validate as the same JPEG the spec names `jpg` — treating `.jpeg` as
+ * a wrong format was falsely blocking a perfectly good image (and
+ * keeping Submit disabled).
+ */
+const MEDIA_EXT_ALIASES: Record<string, string> = {
+  jpeg: 'jpg',
+  jpe: 'jpg',
+  '3gpp': '3gp',
+};
+
+/** Lowercase extension of a media URL's last path segment, '' when it has none. */
+function carouselMediaExt(url: string): string {
+  const withoutQuery = url.split(/[?#]/)[0];
+  const lastSegment = withoutQuery.split('/').pop() ?? '';
+  const dot = lastSegment.lastIndexOf('.');
+  if (dot < 0) return '';
+  const raw = lastSegment.slice(dot + 1).toLowerCase();
+  // A real extension is a short alphanumeric tail; anything else (a
+  // dotless host/path leaking through) is treated as "no extension".
+  return /^[a-z0-9]{1,5}$/.test(raw) ? raw : '';
+}
+
+/** Every extension accepted for a media format, aliases included. */
+function allowedExtensions(spec: typeof MEDIA_HEADER_SPECS.image): string[] {
+  const base = Object.values(spec.extensions) as string[];
+  const out = new Set<string>(base);
+  for (const [alias, canonical] of Object.entries(MEDIA_EXT_ALIASES)) {
+    if (base.includes(canonical)) out.add(alias);
+  }
+  return [...out];
+}
+
 function collectCardIssues(
   data: CarouselTemplateData,
   card: CarouselCard,
@@ -301,9 +336,11 @@ function collectCardIssues(
     // A card can only be the shared format; the builder enforces it at
     // upload time, and this catches a hand-edited row before Meta does.
     const expected = MEDIA_HEADER_SPECS[data.media_format];
-    const ext = card.media_url.split('?')[0].split('.').pop()?.toLowerCase() ?? '';
-    const allowed = Object.values(expected.extensions) as string[];
-    if (ext && !allowed.includes(ext) && !card.media_handle) {
+    const ext = carouselMediaExt(card.media_url);
+    // Only judge URLs that actually carry a extension; a link with none
+    // (a bare CDN path, a redirect) is left for Meta to vet rather than
+    // falsely rejected here.
+    if (ext && !allowedExtensions(expected).includes(ext) && !card.media_handle) {
       out.push({
         cardIndex: index,
         message: `${label}'s asset is not ${expected.formats}, the format the other cards use.`,

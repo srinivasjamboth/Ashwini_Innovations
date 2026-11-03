@@ -166,6 +166,22 @@ describe('collectCarouselIssues — the validation matrix', () => {
     expect(issues.some((i) => /is not .* the format the other cards use/.test(i.message))).toBe(true);
   });
 
+  it('accepts a .jpeg card (not a false "wrong format") and a dotless CDN link', () => {
+    // Regression: a real photo.jpeg was rejected because the allowed set
+    // was just ['jpg','png'], keeping Submit permanently disabled.
+    const jpeg = makeCard({ media_url: 'https://cdn.test/photo.jpeg', media_handle: null });
+    expect(collectCarouselIssues(withCards(validData(), [jpeg, makeCard()]))).toEqual([]);
+    const jpe = makeCard({ media_url: 'https://cdn.test/photo.jpe', media_handle: null });
+    expect(
+      collectCarouselIssues(withCards(validData(), [jpe, makeCard()])).some((i) =>
+        /the format the other cards use/.test(i.message),
+      ),
+    ).toBe(false);
+    // A link with no extension is left for Meta to vet, not falsely rejected.
+    const bare = makeCard({ media_url: 'https://cdn.test/media/abc', media_handle: null });
+    expect(collectCarouselIssues(withCards(validData(), [bare, makeCard()]))).toEqual([]);
+  });
+
   it('enforces card-text samples: count match and non-empty', () => {
     const noSample = makeCard({ text: 'Hi {{1}}', text_examples: [] });
     const issues = collectCarouselIssues(withCards(validData(), [noSample, makeCard()]));
