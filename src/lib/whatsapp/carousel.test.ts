@@ -89,6 +89,29 @@ describe('defaultCarouselData / applyButtonLayout', () => {
       expect(card.buttons.map((b) => b.type)).toEqual(['QUICK_REPLY', 'URL']);
     }
   });
+
+  it('re-types a slot on every card when its layout type changes — the URL field must appear', () => {
+    const base: CarouselTemplateData = {
+      media_format: 'image',
+      cards_have_text: false,
+      button_layout: [{ type: 'QUICK_REPLY' }],
+      cards: [
+        { ...emptyCarouselCard(), buttons: [{ type: 'QUICK_REPLY', text: 'Buy' }] },
+        { ...emptyCarouselCard(), buttons: [{ type: 'QUICK_REPLY', text: 'Buy' }] },
+      ],
+    };
+    const out = applyButtonLayout(base, ['URL']);
+    for (const card of out.cards) {
+      // The old quick_reply object must NOT survive — that bug hid the
+      // URL input and reported "buttons do not match the shared layout".
+      expect(card.buttons[0].type).toBe('URL');
+      expect(card.buttons[0].text).toBe('Buy'); // label carries over
+      expect(card.buttons[0].url ?? null).toBeNull(); // old-type values dropped
+    }
+    expect(
+      collectCarouselIssues(out).some((i) => /do not match the shared layout/.test(i.message)),
+    ).toBe(false);
+  });
 });
 
 describe('collectCarouselIssues — the validation matrix', () => {

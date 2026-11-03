@@ -120,6 +120,12 @@ export function defaultCarouselData(): CarouselTemplateData {
  * derived from the layout — an author edits each card's labels, URL and
  * number, never its button count or order — which is what makes a
  * mismatched card impossible.
+ *
+ * A slot whose TYPE changed is re-typed in place on every card: the
+ * label carries over (it usually still describes the action), but the
+ * url / phone values of the previous type are dropped — keeping the old
+ * button object left cards stuck on the previous type, which hid the
+ * URL / phone fields and reported a layout mismatch.
  */
 export function applyButtonLayout(
   data: CarouselTemplateData,
@@ -131,7 +137,12 @@ export function applyButtonLayout(
     button_layout: next,
     cards: data.cards.map((card) => ({
       ...card,
-      buttons: next.map((item, i) => card.buttons[i] ?? { type: item.type, text: '' }),
+      buttons: next.map((item, i) => {
+        const existing = card.buttons[i];
+        if (!existing) return { type: item.type, text: '' };
+        if (existing.type === item.type) return existing;
+        return { type: item.type, text: existing.text };
+      }),
     })),
   };
 }
