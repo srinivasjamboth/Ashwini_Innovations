@@ -846,6 +846,7 @@ export async function sendTemplateMessage(
       headerMediaUrl: messageParams?.headerMediaUrl,
       headerMediaId: messageParams?.headerMediaId,
       buttonParams: messageParams?.buttonParams,
+      carousel: messageParams?.carousel,
     })
     if (components.length > 0) {
       templatePayload.components = components
@@ -960,6 +961,53 @@ export async function uploadResumableMedia(
     throw new Error('Resumable upload did not return a file handle.')
   }
   return { handle: uploadData.h }
+}
+
+// ============================================================
+// Media upload (send-time media ids)
+// ============================================================
+//
+// POST /{phone_number_id}/media turns raw bytes into a reusable Meta
+// media id (`{"id": "1234..."}`). A carousel send must reference every
+// card's asset by that id (or a public link), so the broadcast fan-out
+// uploads each card once per campaign instead of once per recipient.
+//
+// See https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media
+
+export interface UploadMediaArgs {
+  phoneNumberId: string
+  accessToken: string
+  kind: 'image' | 'video' | 'document'
+  fileName: string
+  mimeType: string
+  bytes: Uint8Array
+}
+
+/**
+ * Upload a file to Meta for the given phone number id and return its
+ * media id. Multipart body, no JSON — Meta rejects the JSON form here.
+ */
+export async function uploadMedia(args: UploadMediaArgs): Promise<{ mediaId: string }> {
+  const { phoneNumberId, accessToken, kind, fileName, mimeType, bytes } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/media`
+
+  const form = new FormData()
+  form.append('messaging_product', 'whatsapp')
+  form.append('type', kind)
+  form.append('media', new Blob([bytes as unknown as BlobPart], { type: mimeType }), fileName)
+
+  const response = await fetch(url, {
+    method: 'POST',
+    // No Content-Type header: fetch sets the multipart boundary itself.
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta media upload failed: ${response.status}`)
+  }
+  const data = (await response.json()) as { id?: string }
+  if (!data.id) throw new Error('Meta media upload did not return a media id.')
+  return { mediaId: data.id }
 }
 
 // ============================================================
@@ -1081,6 +1129,11 @@ export interface DeleteMessageTemplateArgs {
  * Delete a message template on Meta. Pass `metaTemplateId` to scope
  * to a single language variant — otherwise Meta nukes every variant
  * sharing the same `name`.
+ *
+ * Throws on any Meta refusal, including for a template that no longer
+ * exists (the Graph API answers that with HTTP 400 "(#100) Invalid
+ * parameter", never a 404). Callers that must not strand local data use
+ * `isTemplateGoneOnMeta` to tell the two cases apart.
  */
 export async function deleteMessageTemplate(
   args: DeleteMessageTemplateArgs
@@ -1098,6 +1151,49 @@ export async function deleteMessageTemplate(
   if (response.status === 404) return
   if (!response.ok) {
     await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+}
+
+/**
+ * True when Meta definitively has no template with this id — either it
+ * was already deleted, or the deletion finished after Meta parked it in
+ * PENDING_DELETION.
+ *
+ * The read is by object id, not through `/{waba}/message_templates`:
+ * that list endpoint ignores `hsm_id` as a filter and matches `name` by
+ * prefix, so a non-empty result there says nothing about *this* template
+ * (a dead `ashwini` id sits next to four live `ashwini_*` rows). Reading
+ * the id directly is the only unambiguous answer, and anything we cannot
+ * confirm reports `false` so the caller keeps the remote failure visible.
+ */
+export async function isTemplateGoneOnMeta(args: {
+  metaTemplateId: string
+  accessToken: string
+}): Promise<boolean> {
+  const { metaTemplateId, accessToken } = args
+  // A synthetic id (WHATSAPP_TEMPLATES_DRY_RUN) was never a Meta object,
+  // so there is nothing left to delete remotely.
+  if (!/^\d+$/.test(metaTemplateId)) return true
+  try {
+    const response = await fetch(`${META_API_BASE}/${metaTemplateId}?fields=id`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (response.status === 404) return true
+    const data = (await response.json().catch(() => null)) as
+      | { id?: unknown; error?: { code?: number; error_subcode?: number; message?: string } }
+      | null
+    if (response.ok) return data?.id !== metaTemplateId
+    // Dead object ids come back as #100 with subcode 33 and "Unsupported
+    // get request … does not exist". Token/permission failures match
+    // nothing here and stay `false`.
+    const err = data?.error
+    return (
+      err?.code === 100 &&
+      (err.error_subcode === 33 ||
+        /does not exist|unsupported get request/i.test(err.message ?? ''))
+    )
+  } catch {
+    return false
   }
 }
 

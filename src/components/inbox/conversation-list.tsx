@@ -12,7 +12,6 @@ import type { Conversation, ConversationStatus, Tag } from "@/types";
 import { Search, ChevronDown, X, Plus } from "lucide-react";
 import { format, isToday, isYesterday, isThisYear } from "date-fns";
 import { useTranslations } from "next-intl";
-import { useAuth } from "@/hooks/use-auth";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
@@ -90,7 +89,7 @@ function formatListTime(dateStr: string | undefined, yesterdayLabel: string) {
 
 
 
-type ChatTab = "all" | "active" | "mine";
+type ChatTab = "all" | "active" | "replied";
 
 export function ConversationList({
   activeConversationId,
@@ -102,17 +101,15 @@ export function ConversationList({
 }: ConversationListProps) {
   const t = useTranslations("Inbox.conversationList");
   const tn = useTranslations("Inbox.startNewChat");
-  
-  const { user } = useAuth();
 
-  // Primary tab row (All / Active / My Chats) — the sole status filter
+  // Primary tab row (All / Active / Replies) — the sole status filter
   // control. The old redundant "All ▾" status dropdown was removed so this
   // row is the only status control; search and the tag/company metadata
   // filters below remain (they filter on different dimensions, not status).
   const TAB_OPTIONS: { label: string; value: ChatTab }[] = useMemo(() => [
     { label: t("filterAll"), value: "all" },
     { label: t("tabActive"), value: "active" },
-    { label: t("tabMyChats"), value: "mine" },
+    { label: t("tabReplies"), value: "replied" },
   ], [t]);
 
   const [search, setSearch] = useState("");
@@ -213,11 +210,17 @@ export function ConversationList({
   const filtered = useMemo(() => {
     let result = conversations;
 
-    // Tab row filter (All / Active / My Chats).
+    // Tab row filter (All / Active / Replies).
     if (tab === "active") {
       result = result.filter((c) => c.status === "open");
-    } else if (tab === "mine") {
-      result = result.filter((c) => !!user && c.assigned_agent_id === user.id);
+    } else if (tab === "replied") {
+      // Threads awaiting a reply from us: the latest message is
+      // inbound (customer), whether opened or still unread —
+      // independent of open/pending/closed status. Answering (agent
+      // OR bot) flips it back off. The state is mirrored server-side
+      // by migration 058 and arrives via realtime conv UPDATEs, so
+      // the tab catches up live without a refetch.
+      result = result.filter((c) => c.awaiting_reply === true);
     }
 
     // Contact-based filters (tags via OR logic, exact company match).
@@ -241,7 +244,7 @@ export function ConversationList({
     }
 
     return result;
-  }, [conversations, search, selectedTagIds, selectedCompany, tab, user]);
+  }, [conversations, search, selectedTagIds, selectedCompany, tab]);
 
   const toggleTag = useCallback((id: string) => {
     setSelectedTagIds((prev) =>
@@ -419,7 +422,7 @@ export function ConversationList({
         )}
       </div>
 
-      {/* Live "N Chats" count + tab row (All / Active / My Chats) */}
+      {/* Live "N Chats" count + tab row (All / Active / Replies) */}
       <div className="px-3 pt-2">
         <span className="text-xs text-muted-foreground">
           {t("chatsCount", { count: filtered.length })}

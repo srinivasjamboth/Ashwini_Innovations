@@ -31,6 +31,12 @@
  */
 
 import type { MessageTemplate, TemplateButton } from '@/types';
+import {
+  buildCarouselSendComponent,
+  carouselOf,
+  type CarouselSendComponent,
+  type CarouselSendValues,
+} from './carousel';
 import { extractVariableIndices } from './template-validators';
 
 export interface SendTimeParams {
@@ -49,6 +55,13 @@ export interface SendTimeParams {
    * override at send time.
    */
   buttonParams?: Record<number, string>;
+  /**
+   * Carousel templates only: the per-recipient card values (card text
+   * variables, URL-button variables) plus the campaign's uploaded card
+   * media. Ignored for every other template, so existing callers are
+   * unaffected.
+   */
+  carousel?: CarouselSendValues;
 }
 
 export type MetaSendComponent =
@@ -59,7 +72,9 @@ export type MetaSendComponent =
       sub_type: 'url' | 'quick_reply' | 'copy_code';
       index: string;
       parameters: MetaSendParameter[];
-    };
+    }
+  /** Media card carousel — a card per template card, zero-based index. */
+  | CarouselSendComponent;
 
 type MetaSendParameter =
   | { type: 'text'; text: string }
@@ -226,12 +241,27 @@ function buildButtonComponent(
  * Build the full `components` array for the send-message payload.
  * Returns an empty array when the template is fully static (no
  * variables, no media header), which is a valid Meta request.
+ *
+ * A carousel template replaces the whole header/footer/button trio with
+ * one `carousel` component, so its branch returns early.
  */
 export function buildSendComponents(
   template: MessageTemplate,
   params: SendTimeParams = {},
 ): MetaSendComponent[] {
   const out: MetaSendComponent[] = [];
+  if (template.header_type === 'carousel') {
+    const data = carouselOf(template);
+    if (!data) {
+      throw new Error(
+        'This carousel template has no stored cards — re-sync it from Meta before sending.',
+      );
+    }
+    const body = buildBodyComponent(template, params);
+    if (body) out.push(body);
+    out.push(buildCarouselSendComponent(data, template.id, params.carousel));
+    return out;
+  }
   const header = buildHeaderComponent(template, params);
   if (header) out.push(header);
   const body = buildBodyComponent(template, params);

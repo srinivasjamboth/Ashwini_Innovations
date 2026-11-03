@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { toast } from 'sonner';
@@ -11,6 +11,7 @@ import { Step2SelectAudience } from '@/components/broadcasts/step2-select-audien
 import { Step3Personalize } from '@/components/broadcasts/step3-personalize';
 import { Step4ScheduleSend } from '@/components/broadcasts/step4-schedule-send';
 import { useBroadcastSending } from '@/hooks/use-broadcast-sending';
+import type { BroadcastCsvRow } from '@/lib/broadcast-csv';
 import { Check } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
@@ -21,25 +22,59 @@ const steps = [
   { label: 'send', key: 'send' },
 ] as const;
 
+// `useSearchParams` needs a Suspense boundary to stay prerenderable —
+// same pattern the auth/settings pages use.
 export default function NewBroadcastPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="mx-auto max-w-3xl space-y-8 py-12" aria-busy="true" />
+      }
+    >
+      <NewBroadcastWizard />
+    </Suspense>
+  );
+}
+
+function NewBroadcastWizard() {
   const router = useRouter();
   const t = useTranslations('Broadcasts.new');
+  const searchParams = useSearchParams();
   const { accountId } = useAuth();
   const { createAndSendBroadcast, scheduleBroadcast, isProcessing, progress } = useBroadcastSending();
+
+  // "Send broadcast to this group" deep link from the group detail
+  // page — starts the wizard pre-set to that groups audience.
+  const initialGroupIds = useMemo(() => {
+    const raw = searchParams.get('groupIds');
+    if (!raw) return [] as string[];
+    return raw
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+  }, [searchParams]);
 
   const [currentStep, setCurrentStep] = useState(0);
   const [template, setTemplate] = useState<MessageTemplate | null>(null);
   const [audience, setAudience] = useState<{
-    type: 'all' | 'tags' | 'custom_field' | 'csv';
+    type: 'all' | 'tags' | 'groups' | 'custom_field' | 'csv';
     tagIds?: string[];
+    groupIds?: string[];
     customField?: {
       fieldId: string;
       operator: 'is' | 'is_not' | 'contains';
       value: string;
     };
     csvContacts?: { phone: string; name?: string }[];
+    // Duplicate-preserving CSV rows + file name (wizard keep-mode).
+    csvRows?: BroadcastCsvRow[];
+    csvFileName?: string;
     excludeTagIds?: string[];
-  }>({ type: 'all' });
+  }>(
+    initialGroupIds.length > 0
+      ? { type: 'groups', groupIds: initialGroupIds }
+      : { type: 'all' }
+  );
   const [variables, setVariables] = useState<
     Record<string, { type: 'static' | 'field' | 'custom_field'; value: string }>
   >({});
@@ -59,8 +94,11 @@ export default function NewBroadcastPage() {
         audience: {
           type: audience.type,
           tagIds: audience.tagIds,
+          groupIds: audience.groupIds,
           customField: audience.customField,
           csvContacts: audience.csvContacts,
+          csvRows: audience.csvRows,
+          csvFileName: audience.csvFileName,
           excludeTagIds: audience.excludeTagIds,
         },
         variables,
@@ -90,8 +128,11 @@ export default function NewBroadcastPage() {
           audience: {
             type: audience.type,
             tagIds: audience.tagIds,
+            groupIds: audience.groupIds,
             customField: audience.customField,
             csvContacts: audience.csvContacts,
+            csvRows: audience.csvRows,
+            csvFileName: audience.csvFileName,
             excludeTagIds: audience.excludeTagIds,
           },
           variables,

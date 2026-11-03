@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseBroadcastCsv } from './broadcast-csv';
+import { parseBroadcastCsv, parseBroadcastCsvRows } from './broadcast-csv';
 
 describe('parseBroadcastCsv', () => {
   it('parses phone + name into the audience shape', () => {
@@ -132,6 +132,109 @@ describe('parseBroadcastCsv', () => {
         { phone: '+15551230000', name: 'Ada' },
         { phone: '+15559990000', name: 'Grace' },
       ],
+    });
+  });
+});
+
+describe('parseBroadcastCsvRows (duplicate-preserving mode)', () => {
+  it('keeps every valid row, repeats included, with its own values', () => {
+    const result = parseBroadcastCsvRows(
+      `phone,name
++15551230000,Ada Morning
++15559990000,Grace
++15551230000,Ada Evening`
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rows.map((r) => [r.sourceRow, r.name])).toEqual([
+      [2, 'Ada Morning'],
+      [3, 'Grace'],
+      [4, 'Ada Evening'],
+    ]);
+    expect(result.review).toMatchObject({
+      totalRows: 3,
+      validRows: 3,
+      uniqueNumbers: 2,
+      repeatedRows: 1,
+    });
+  });
+
+  it('collapses differently-formatted spellings of one number onto one key but keeps both rows', () => {
+    const result = parseBroadcastCsvRows(
+      `phone,name
++1 (555) 123-0000,Ada
++1-555-123-0000,Ada Again`
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows[0].key).toBe(result.rows[1].key);
+    expect(result.review.uniqueNumbers).toBe(1);
+    expect(result.review.repeatedRows).toBe(1);
+  });
+
+  it('skips invalid numbers with reasons and counts them in the review', () => {
+    const result = parseBroadcastCsvRows(
+      `phone,name
+4155551212,National US
++14155551212,Ada
+,Nobody`
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rows).toHaveLength(1);
+    expect(result.review.totalRows).toBe(3);
+    expect(result.review.validRows).toBe(1);
+    expect(result.review.skipped).toEqual([
+      { phone: '4155551212', name: 'National US', sourceRow: 2, reason: 'invalid_phone' },
+      { phone: '', name: 'Nobody', sourceRow: 4, reason: 'invalid_phone' },
+    ]);
+  });
+
+  it('tracks physical line numbers across blank lines and embedded newlines', () => {
+    const result = parseBroadcastCsvRows(
+      `phone,name
++15551230000,Ada
+
++15559990000,"Grace\nHopper"`
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rows.map((r) => r.sourceRow)).toEqual([2, 4]);
+  });
+
+  it('strips a UTF-8 BOM before the header scan', () => {
+    const result = parseBroadcastCsvRows('\uFEFFphone,name\n+15551230000,Ada');
+    expect(result.ok).toBe(true);
+  });
+
+  it('keeps the shared error contract for unusable files', () => {
+    expect(parseBroadcastCsvRows('name,email\nAda,a@b.com')).toEqual({
+      ok: false,
+      error: 'missing_phone_column',
+    });
+    expect(parseBroadcastCsvRows('phone,name\n4155551212,Ada')).toEqual({
+      ok: false,
+      error: 'no_valid_rows',
+    });
+  });
+
+  it('carries per-row email/company for variable resolution', () => {
+    const result = parseBroadcastCsvRows(
+      `phone,name,email,company
++15551230000,Ada,ada@example.com,Lovelace`
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rows[0]).toMatchObject({
+      name: 'Ada',
+      email: 'ada@example.com',
+      company: 'Lovelace',
     });
   });
 });

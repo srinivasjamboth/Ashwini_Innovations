@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   Plus,
@@ -9,6 +9,7 @@ import {
   AlertCircle,
   X,
   Upload,
+  ExternalLink,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import {
@@ -28,6 +29,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { useTranslations } from 'next-intl';
 import { Card, CardContent } from '@/components/ui/card';
 import { SettingsPanelHead } from './settings-panel-head';
+import { CarouselEditor } from './carousel-editor';
 import { TemplatePreview } from './template-preview';
 import { TemplateTableView } from './template-table-view';
 import { TemplateViewDialog } from './template-view-dialog';
@@ -49,6 +51,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import type {
+  CarouselTemplateData,
   MessageTemplate,
   PublishedFlowOption,
   TemplateButton,
@@ -59,10 +62,25 @@ import {
   extractVariableIndices,
   TEMPLATE_LIMITS,
 } from '@/lib/whatsapp/template-validators';
+import {
+  collectCarouselIssues,
+  defaultCarouselData,
+  parseCarousel,
+} from '@/lib/whatsapp/carousel';
 
 const CATEGORIES = ['Marketing', 'Utility', 'Authentication'] as const;
-type HeaderFormat = 'none' | 'text' | 'image' | 'video' | 'document';
-const HEADER_FORMATS: HeaderFormat[] = ['none', 'text', 'image', 'video', 'document'];
+type HeaderFormat = 'none' | 'text' | 'image' | 'video' | 'document' | 'carousel';
+const HEADER_FORMATS: HeaderFormat[] = ['none', 'text', 'image', 'video', 'document', 'carousel'];
+// Explicit key map (not `t(\`header${x}\`)`) so the catalogue scanner
+// sees every key — same convention as uploadLabelKey below.
+const HEADER_FORMAT_LABEL_KEY: Record<HeaderFormat, string> = {
+  none: 'headerNone',
+  text: 'headerText',
+  image: 'headerImage',
+  video: 'headerVideo',
+  document: 'headerDocument',
+  carousel: 'headerCarousel',
+};
 
 interface TemplateFormData {
   name: string;
@@ -76,6 +94,12 @@ interface TemplateFormData {
   body_samples: string[];
   footer_text: string;
   buttons: TemplateButton[];
+  /**
+   * Card document for the carousel header type (Part 2 of the carousel
+   * build). Null for every other format, so existing templates serialize
+   * exactly as before.
+   */
+  carousel: CarouselTemplateData | null;
 }
 
 const emptyForm: TemplateFormData = {
@@ -90,6 +114,7 @@ const emptyForm: TemplateFormData = {
   body_samples: [],
   footer_text: '',
   buttons: [],
+  carousel: null,
 };
 
 const COMMON_LANGUAGE_CODES = [
@@ -132,7 +157,7 @@ function emptyButton(type: TemplateButton['type']): TemplateButton {
 export function TemplateManager() {
   const t = useTranslations('Settings.templates');
   const supabase = createClient();
-  const { user, account, loading: authLoading } = useAuth();
+  const { user, account, accountId, loading: authLoading } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
@@ -165,6 +190,108 @@ export function TemplateManager() {
   // Body textarea ref — lets "Add Variable" insert the next {{n}} token at
   // the caret instead of the user typing the braces by hand.
   const bodyRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── Carousel (media card carousels) ───────────────────────────────
+  // Which card the editor + the phone preview are focused on. The panel
+  // owns card data through `form.carousel` — these two refs are UI-only.
+  const [carouselActiveCard, setCarouselActiveCard] = useState(0);
+  const isCarousel = form.header_format === 'carousel';
+  // A freshly-picked carousel starts from Meta's minimum compliance shape
+  // (2 image cards, text on, one quick reply); an edited row hydrates its
+  // stored document, and an unreadable one degrades to the default rather
+  // than crashing the builder.
+  const carouselData = useMemo(
+    () => (isCarousel ? (form.carousel ?? defaultCarouselData()) : null),
+    [isCarousel, form.carousel],
+  );
+  // Same issue list the server re-checks via validateCarouselSubmission —
+  // computed here once and shared between the summary and the gate.
+  const carouselIssues = useMemo(
+    () => (carouselData ? collectCarouselIssues(carouselData) : []),
+    [carouselData],
+  );
+  // Preview-only copy: React renders the cards immediately but lets the
+  // phone mockup update at lower priority than typing.
+  const deferredCarouselData = useDeferredValue(carouselData);
+  // Functional updater keeps parallel card uploads from clobbering each
+  // other: every completion composes against the latest form state.
+  const handleCarouselChange = useCallback(
+    (updater: (data: CarouselTemplateData) => CarouselTemplateData) => {
+      setForm((f) => ({
+        ...f,
+        carousel: updater(f.carousel ?? defaultCarouselData()),
+      }));
+    },
+    [],
+  );
+
+  // ── "Manage Templates" (Meta WhatsApp Manager) ──────────────────────
+  // The deep link is only meaningful once the account has a connected
+  // WhatsApp number, so the button sits disabled with a tooltip until
+  // the (RLS-scoped) config row says it is. Read like the broadcast
+  // wizard reads it — account-scoped, never user-scoped.
+  const [waConnected, setWaConnected] = useState(false);
+  // Timestamp of the last completed sync (manual or tab-return auto
+  // sync). The refetch-on-return path is throttled to one pass per
+  // minute so alt-tabbing back never hammers Meta's template endpoint.
+  const lastSyncAtRef = useRef(0);
+  const syncInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (authLoading || !accountId) return;
+    let active = true;
+    (async () => {
+      const { data } = await supabase
+        .from('whatsapp_config')
+        .select('phone_number_id')
+        .eq('account_id', accountId)
+        .maybeSingle();
+      if (active) setWaConnected(Boolean(data?.phone_number_id));
+    })();
+    return () => {
+      active = false;
+    };
+  }, [authLoading, accountId, supabase]);
+
+  // Silent sync used when the user returns to the tab from WhatsApp
+  // Manager: templates created/edited on Meta must show up here without
+  // a manual Sync click. No spinners, no "Synced N templates" toast —
+  // only a gentle note when new rows actually landed, and errors are
+  // swallowed (a background pass failing must not look like a crash).
+  const runAutoSync = useCallback(async () => {
+    if (!user || syncInFlightRef.current) return;
+    syncInFlightRef.current = true;
+    try {
+      const res = await fetch('/api/whatsapp/templates/sync', { method: 'POST' });
+      if (res.ok) {
+        lastSyncAtRef.current = Date.now();
+        const data = await res.json().catch(() => null);
+        if (user) await fetchTemplates(user.id);
+        if (data && Number(data.inserted) > 0) {
+          toast.success(t('toastAutoSyncNew', { count: Number(data.inserted) }));
+        }
+      }
+    } catch {
+      // Best-effort background refresh — the manual button remains the
+      // loud path when something is actually wrong.
+    } finally {
+      syncInFlightRef.current = false;
+    }
+    // fetchTemplates is a stable in-component declaration (reads refs
+    // only) — listing it would re-create the callback every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, t]);
+
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.visibilityState !== 'visible') return;
+      if (!waConnected) return;
+      if (Date.now() - lastSyncAtRef.current < 60_000) return;
+      void runAutoSync();
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [waConnected, runAutoSync]);
 
   // Published Forms (Meta Flows) for a template's Form button. Three
   // states rather than an array default, because "the account has no
@@ -303,12 +430,18 @@ export function TemplateManager() {
       header_content:
         form.header_format === 'text' ? form.header_content.trim() : undefined,
       header_media_url:
-        form.header_format !== 'none' && form.header_format !== 'text'
+        headerNeedsMedia
           ? form.header_media_url.trim() || undefined
           : undefined,
       body_text: form.body_text.trim(),
-      footer_text: form.footer_text.trim() || undefined,
-      buttons: form.buttons.length > 0 ? form.buttons : undefined,
+      // A carousel has no footer and no top-level buttons — Meta's
+      // carousel component owns both — and it carries its card document
+      // instead. Other formats never see these branches.
+      footer_text:
+        isCarousel ? undefined : form.footer_text.trim() || undefined,
+      buttons:
+        !isCarousel && form.buttons.length > 0 ? form.buttons : undefined,
+      carousel: isCarousel ? (carouselData ?? undefined) : undefined,
       sample_values:
         Object.keys(sample_values).length > 0 ? sample_values : undefined,
     };
@@ -316,6 +449,7 @@ export function TemplateManager() {
 
   function openEdit(template: MessageTemplate) {
     setEditingId(template.id);
+    setCarouselActiveCard(0);
     setForm({
       name: template.name,
       category: template.category,
@@ -328,12 +462,16 @@ export function TemplateManager() {
       body_samples: template.sample_values?.body ?? [],
       footer_text: template.footer_text ?? '',
       buttons: template.buttons ?? [],
+      // parseCarousel never throws — a hand-edited or half-synced row
+      // degrades to null and the panel rebuilds from the default shape.
+      carousel: parseCarousel(template.carousel),
     });
     setDialogOpen(true);
   }
 
   function openCreate() {
     setEditingId(null);
+    setCarouselActiveCard(0);
     setForm(emptyForm);
     setDialogOpen(true);
   }
@@ -411,6 +549,9 @@ export function TemplateManager() {
       if (!res.ok) {
         throw new Error(data?.error || `Sync failed (HTTP ${res.status})`);
       }
+      // Stamp the throttle window so returning to the tab right after a
+      // manual Sync doesn't immediately fire the background auto-sync.
+      lastSyncAtRef.current = Date.now();
       toast.success(
         t('toastSyncCount', { total: data.total }) +
           (data.inserted || data.updated
@@ -450,8 +591,8 @@ export function TemplateManager() {
     setDeletingId(target.id);
     try {
       // Route handler scopes the Meta delete via hsm_id (so sibling
-      // language variants survive) and falls through to remove the
-      // local row. Local-only rows skip the Meta call.
+      // language variants survive). The row always leaves the CRM; a Meta
+      // refusal comes back as `meta_warning` instead of failing the delete.
       const res = await fetch(`/api/whatsapp/templates/${target.id}`, {
         method: 'DELETE',
       });
@@ -459,9 +600,17 @@ export function TemplateManager() {
       if (!res.ok) {
         throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
       }
-      toast.success(t('toastDeleteSuccess'));
       setTemplates((prev) => prev.filter((t) => t.id !== target.id));
       setTemplateToDelete(null);
+      // Error (not success) so the message survives long enough to read,
+      // and explains why "Sync from Meta" may bring the row back.
+      if (data?.meta_warning) {
+        toast.error(t('toastDeleteMetaWarning', { error: String(data.meta_warning) }), {
+          duration: 9000,
+        });
+      } else {
+        toast.success(t('toastDeleteSuccess'));
+      }
     } catch (err) {
       console.error('Delete error:', err);
       toast.error(err instanceof Error ? err.message : t('toastDeleteError'));
@@ -587,7 +736,10 @@ export function TemplateManager() {
   }
 
   const headerNeedsMedia =
-    form.header_format !== 'none' && form.header_format !== 'text';
+    form.header_format !== 'none' &&
+    form.header_format !== 'text' &&
+    // A carousel has no single header asset — every card carries its own.
+    form.header_format !== 'carousel';
   const headerMediaKind: MediaHeaderKind | null = isMediaHeaderKind(
     form.header_format,
   )
@@ -651,6 +803,28 @@ export function TemplateManager() {
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
+              disabled={!waConnected}
+              title={
+                waConnected
+                  ? t('manageTemplatesTitle')
+                  : t('manageTemplatesConnectFirst')
+              }
+              onClick={() =>
+                // Meta documents the Message templates panel at this
+                // base URL; it resolves the logged-in business account
+                // itself, so nothing is hard-coded or guessed here.
+                window.open(
+                  'https://business.facebook.com/latest/whatsapp_manager/message_templates',
+                  '_blank',
+                  'noopener,noreferrer',
+                )
+              }
+            >
+              <ExternalLink className="size-4" />
+              {t('manageTemplates')}
+            </Button>
+            <Button
+              variant="outline"
               onClick={handleSyncFromMeta}
               disabled={syncing}
               title={t('syncTitle')}
@@ -707,6 +881,7 @@ export function TemplateManager() {
           if (!open) {
             setEditingId(null);
             setForm(emptyForm);
+            setCarouselActiveCard(0);
           }
         }}
       >
@@ -752,6 +927,7 @@ export function TemplateManager() {
                 <Label className="text-muted-foreground">{t('category')}</Label>
                 <Select
                   value={form.category}
+                  disabled={isCarousel}
                   onValueChange={(val) =>
                     setForm({
                       ...form,
@@ -774,6 +950,11 @@ export function TemplateManager() {
                     ))}
                   </SelectContent>
                 </Select>
+                {isCarousel && (
+                  <p className="text-[11px] text-muted-foreground">
+                    {t('carouselMarketingNote')}
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -807,18 +988,30 @@ export function TemplateManager() {
               <Label className="text-muted-foreground">{t('header')}</Label>
               <Select
                 value={form.header_format}
-                onValueChange={(val) =>
+                onValueChange={(val) => {
+                  const next = (val || 'none') as HeaderFormat;
+                  if (next === 'carousel') {
+                    // Meta only accepts carousels as Marketing, so the
+                    // format switch locks the category too (the Select
+                    // below is disabled while a carousel is built).
+                    // Card data survives format switches, exactly like
+                    // the header_* fields above it.
+                    setForm({
+                      ...form,
+                      header_format: 'carousel',
+                      category: 'Marketing',
+                      carousel: form.carousel ?? defaultCarouselData(),
+                    });
+                    return;
+                  }
                   // Preserve header_content, header_media_url, and
                   // header_sample across format switches. The submit
                   // payload builder only reads the field that matches
                   // the active format, so an orphan value on a hidden
                   // field is harmless — and keeping it lets the user
                   // switch formats to compare without losing typing.
-                  setForm({
-                    ...form,
-                    header_format: (val || 'none') as HeaderFormat,
-                  })
-                }
+                  setForm({ ...form, header_format: next });
+                }}
               >
                 <SelectTrigger className="w-full bg-muted border-border text-foreground">
                   <SelectValue />
@@ -830,15 +1023,7 @@ export function TemplateManager() {
                       value={type}
                       className="text-popover-foreground focus:bg-muted focus:text-popover-foreground"
                     >
-                      {type === 'none'
-                        ? t('headerNone')
-                        : type === 'text'
-                          ? t('headerText')
-                          : type === 'image'
-                            ? t('headerImage')
-                            : type === 'video'
-                              ? t('headerVideo')
-                              : t('headerDocument')}
+                      {t(HEADER_FORMAT_LABEL_KEY[type])}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -937,7 +1122,9 @@ export function TemplateManager() {
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label className="text-muted-foreground">{t('bodyText')}</Label>
+                <Label className="text-muted-foreground">
+                  {isCarousel ? t('carouselBodyLabel') : t('bodyText')}
+                </Label>
                 <Button
                   type="button"
                   variant="outline"
@@ -994,8 +1181,23 @@ export function TemplateManager() {
                   })}
                 </div>
               )}
+              {/* The card editor replaces the footer + top-level buttons
+                  sections below for the carousel format — Meta's
+                  carousel component owns text, media and buttons per
+                  card, so a compliant template cannot be built with
+                  both. */}
+              {isCarousel && carouselData && (
+                <CarouselEditor
+                  data={carouselData}
+                  onChange={handleCarouselChange}
+                  activeCard={carouselActiveCard}
+                  onActiveCardChange={setCarouselActiveCard}
+                  issues={carouselIssues}
+                />
+              )}
             </div>
 
+            {!isCarousel && (
             <div className="space-y-2">
               <Label className="text-muted-foreground">{t('footer')}</Label>
               <Input
@@ -1008,7 +1210,9 @@ export function TemplateManager() {
                 className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
               />
             </div>
+            )}
 
+            {!isCarousel && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-muted-foreground">{t('buttons')}</Label>
@@ -1233,6 +1437,7 @@ export function TemplateManager() {
                 </div>
               )}
             </div>
+            )}
             </div>
 
             <div className="self-start lg:sticky lg:top-2">
@@ -1245,6 +1450,10 @@ export function TemplateManager() {
                 footerText={form.footer_text}
                 buttons={form.buttons}
                 businessName={account?.name ?? ''}
+                // Deferred so typing into one card never blocks the
+                // strip behind a preview re-render (Part 1 perf rule).
+                carousel={deferredCarouselData}
+                carouselActiveCard={carouselActiveCard}
               />
             </div>
           </div>
@@ -1259,7 +1468,14 @@ export function TemplateManager() {
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={submitting || form.category === 'Authentication'}
+              disabled={
+                submitting ||
+                form.category === 'Authentication' ||
+                // A carousel only submits once every card passes the same
+                // rules the server enforces — the summary above lists what
+                // is still missing.
+                (isCarousel && carouselIssues.length > 0)
+              }
               className="bg-primary hover:bg-primary/90 text-primary-foreground"
             >
               {submitting ? (

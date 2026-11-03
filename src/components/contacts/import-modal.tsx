@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import {
@@ -17,6 +17,8 @@ import {
   resolveImportTagIds,
   type ContactTagAssignment,
 } from '@/lib/contacts/resolve-import-tags';
+import { addGroupMembersByIds, listAllGroups } from '@/lib/contacts/group-api';
+import type { ContactGroup } from '@/types';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import {
@@ -36,6 +38,7 @@ import {
   XCircle,
   AlertTriangle,
   Tag,
+  FolderClosed,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
@@ -138,6 +141,12 @@ export function ImportModal({
   const [tagColorByKey, setTagColorByKey] = useState<Map<string, string>>(
     new Map()
   );
+  // Optional "add imported contacts to group" target. PURELY additive:
+  // the dedupe/skip pipeline below is unchanged no matter what is
+  // picked here — only the rows this import actually creates get the
+  // membership, existing duplicate-skipped contacts are never touched.
+  const [groups, setGroups] = useState<ContactGroup[]>([]);
+  const [targetGroupId, setTargetGroupId] = useState('');
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<{
     imported: number;
@@ -146,7 +155,19 @@ export function ImportModal({
     failed: number;
     failedDetails: { phone: string; name?: string; reason: string }[];
     tagsAssigned: number;
+    groupAssigned: number;
   } | null>(null);
+
+  // Group picker options — loaded with the same paged list RPC the
+  // Groups pages use, so the picker can never silently truncate.
+  useEffect(() => {
+    if (open) {
+      listAllGroups(supabase)
+        .then(setGroups)
+        .catch(() => setGroups([]));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   function reset() {
     setFile(null);
@@ -154,6 +175,7 @@ export function ImportModal({
     setHasTagsColumn(false);
     setHasCompanyColumn(false);
     setTagColorByKey(new Map());
+    setTargetGroupId('');
     setResult(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   }
@@ -274,6 +296,10 @@ export function ImportModal({
       }
 
       const tagAssignments: ContactTagAssignment[] = [];
+      // Every contact this import actually creates. Feeded ONLY to the
+      // optional group-membership step below — duplicate-skipped rows
+      // never land here, so the skip pipeline stays byte-for-byte intact.
+      const createdContactIds: string[] = [];
 
       // 4) Batch insert the genuinely-new rows in chunks of 50. The DB
       //    unique index is the backstop: a 23505 (race, or a format
@@ -310,6 +336,7 @@ export function ImportModal({
 
             if (!singleErr && singleData) {
               imported++;
+              createdContactIds.push(singleData.id);
               if (source.tagNames.length > 0) {
                 tagAssignments.push({
                   contactId: singleData.id,
@@ -346,6 +373,7 @@ export function ImportModal({
           // parallel inserts, zip by phone or returned id instead.
           for (let j = 0; j < inserted.length; j++) {
             const source = chunk[j];
+            createdContactIds.push(inserted[j].id);
             if (!source || source.tagNames.length === 0) continue;
             tagAssignments.push({
               contactId: inserted[j].id,
@@ -368,6 +396,23 @@ export function ImportModal({
         toast.warning(t('toastTagsWarning'));
       }
 
+      // 6) Optional group membership for the contacts we just created.
+      //    Additive and best-effort: a failure here never rolls back or
+      //    re-reports the import itself, and existing (skipped) contacts
+      //    are excluded because only createdContactIds is passed in.
+      let groupAssigned = 0;
+      if (targetGroupId && createdContactIds.length > 0) {
+        try {
+          groupAssigned = await addGroupMembersByIds(
+            supabase,
+            targetGroupId,
+            createdContactIds
+          );
+        } catch {
+          toast.warning(t('toastGroupWarning'));
+        }
+      }
+
       setResult({
         imported,
         skipped,
@@ -375,6 +420,7 @@ export function ImportModal({
         failed,
         failedDetails,
         tagsAssigned,
+        groupAssigned,
       });
       if (imported > 0) {
         toast.success(t('toastImported', { count: imported }));
@@ -382,6 +428,13 @@ export function ImportModal({
       }
       if (tagsAssigned > 0) {
         toast.success(t('toastTagsAssigned', { count: tagsAssigned }));
+      }
+      if (groupAssigned > 0) {
+        const targetName =
+          groups.find((g) => g.id === targetGroupId)?.name ?? '';
+        toast.success(
+          t('toastGroupAssigned', { count: groupAssigned, name: targetName })
+        );
       }
       if (skippedNames.length > 0) {
         const sample = skippedNames.slice(0, 3).join(', ');
@@ -598,6 +651,36 @@ export function ImportModal({
                   {t('moreRows', { count: parsedRows.length - PREVIEW_LIMIT })}
                 </p>
               )}
+
+              {groups.length > 0 && (
+                <div className="flex items-center gap-2 rounded-xl border border-border/80 bg-background/40 px-3 py-2.5">
+                  <FolderClosed className="size-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <label
+                      htmlFor="import-group-select"
+                      className="block text-[11px] font-medium text-muted-foreground"
+                    >
+                      {t('groupPickerLabel')}
+                    </label>
+                    <select
+                      id="import-group-select"
+                      value={targetGroupId}
+                      onChange={(e) => setTargetGroupId(e.target.value)}
+                      className="w-full rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      <option value="">{t('groupPickerNone')}</option>
+                      {groups.map((group) => (
+                        <option key={group.id} value={group.id}>
+                          {group.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] leading-tight text-muted-foreground">
+                      {t('groupPickerHint')}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -615,6 +698,12 @@ export function ImportModal({
                   <div className="flex items-center gap-1.5 text-sm text-cyan-400">
                     <CheckCircle className="size-4 shrink-0" />
                     {t('resultTags', { count: result.tagsAssigned })}
+                  </div>
+                )}
+                {result.groupAssigned > 0 && (
+                  <div className="flex items-center gap-1.5 text-sm text-cyan-400">
+                    <FolderClosed className="size-4 shrink-0" />
+                    {t('resultGroup', { count: result.groupAssigned })}
                   </div>
                 )}
                 {result.skipped > 0 && (

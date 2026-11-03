@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   deleteMessageTemplate,
   editMessageTemplate,
+  isTemplateGoneOnMeta,
   submitMessageTemplate,
 } from './meta-api';
 
@@ -220,5 +221,106 @@ describe('deleteMessageTemplate', () => {
         metaTemplateId: 'y',
       }),
     ).rejects.toThrow(/boom/);
+  });
+
+  // Meta answers a template it has already dropped with HTTP 400
+  // "(#100) Invalid parameter" — the same envelope a malformed request
+  // gets. The delete helper does not guess which it hit; it hands the
+  // refusal to the caller, which asks `isTemplateGoneOnMeta`.
+  it('throws the Meta message for a 400 refusal, without probing', async () => {
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(400, { error: { message: 'Invalid parameter', code: 100 } }),
+    );
+
+    await expect(
+      deleteMessageTemplate({
+        wabaId: 'W',
+        accessToken: 't',
+        name: 'ashwini',
+        metaTemplateId: '996778509811309',
+      }),
+    ).rejects.toThrow(/Invalid parameter/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('isTemplateGoneOnMeta', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // The WABA list endpoint ignores hsm_id and prefix-matches on name, so
+  // a dead `ashwini` id looks "present" there. Only the by-id read is a
+  // verdict about this template.
+  it('reads the object by id, not through the WABA list', async () => {
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(400, {
+        error: {
+          code: 100,
+          error_subcode: 33,
+          message: "Unsupported get request. Object with ID '996778509811309' does not exist",
+        },
+      }),
+    );
+
+    await expect(
+      isTemplateGoneOnMeta({ metaTemplateId: '996778509811309', accessToken: 't' }),
+    ).resolves.toBe(true);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toContain('/996778509811309?fields=id');
+    expect(url).not.toContain('message_templates');
+    expect(init.headers.Authorization).toBe('Bearer t');
+  });
+
+  it('reports a live template as present', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse({ id: '996778509811309' }));
+    await expect(
+      isTemplateGoneOnMeta({ metaTemplateId: '996778509811309', accessToken: 't' }),
+    ).resolves.toBe(false);
+  });
+
+  it('treats 404 as gone', async () => {
+    fetchMock.mockResolvedValueOnce(errorResponse(404, { error: { message: 'nope' } }));
+    await expect(
+      isTemplateGoneOnMeta({ metaTemplateId: '1', accessToken: 't' }),
+    ).resolves.toBe(true);
+  });
+
+  it('keeps a token failure as present so the refusal stays visible', async () => {
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(401, { error: { code: 190, message: 'Error validating access token' } }),
+    );
+    await expect(
+      isTemplateGoneOnMeta({ metaTemplateId: '1', accessToken: 't' }),
+    ).resolves.toBe(false);
+  });
+
+  it('does not read a bare #100 without subcode 33 as gone', async () => {
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(400, { error: { code: 100, message: 'Invalid parameter' } }),
+    );
+    await expect(
+      isTemplateGoneOnMeta({ metaTemplateId: '1', accessToken: 't' }),
+    ).resolves.toBe(false);
+  });
+
+  it('short-circuits a synthetic dry-run id without calling Meta', async () => {
+    await expect(
+      isTemplateGoneOnMeta({ metaTemplateId: 'dry-run-9f2d', accessToken: 't' }),
+    ).resolves.toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports present when the probe itself throws', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('network down'));
+    await expect(
+      isTemplateGoneOnMeta({ metaTemplateId: '1', accessToken: 't' }),
+    ).resolves.toBe(false);
   });
 });

@@ -11,10 +11,15 @@
  */
 
 import type { TemplatePayload } from './template-validators';
+import { buildCarouselCreationComponent } from './carousel';
 import type { TemplateButton } from '@/types';
 
 export interface MetaComponent {
-  type: 'HEADER' | 'BODY' | 'FOOTER' | 'BUTTONS';
+  /**
+   * CAROUSEL is the media-card-carousel component: no format, no text,
+   * no buttons of its own — only nested `cards`.
+   */
+  type: 'HEADER' | 'BODY' | 'FOOTER' | 'BUTTONS' | 'CAROUSEL';
   format?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT';
   text?: string;
   buttons?: MetaButtonPayload[];
@@ -24,9 +29,11 @@ export interface MetaComponent {
     header_handle?: string[];
     body_text?: string[][];
   };
+  /** CAROUSEL only — 2 to 10 cards, each a nested component list. */
+  cards?: Array<{ components: MetaComponent[] }>;
 }
 
-interface MetaButtonPayload {
+export interface MetaButtonPayload {
   type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE' | 'FLOW';
   text: string;
   url?: string;
@@ -152,14 +159,29 @@ const CATEGORY_TO_META: Record<
 /**
  * Assemble the full submit payload (name + category + language +
  * components in canonical order: HEADER → BODY → FOOTER → BUTTONS).
+ *
+ * A carousel template is the exception the Meta docs spell out: it has
+ * no header, no footer and no top-level buttons — only BODY followed by
+ * CAROUSEL. The validators refuse any other combination, so the branch
+ * below is the only place the carousel shape enters this builder.
  */
 export function buildMetaTemplatePayload(
   payload: TemplatePayload,
 ): MetaTemplateSubmitPayload {
   const components: MetaComponent[] = [];
-  const header = buildHeaderComponent(payload);
+  const isCarousel = payload.header_type === 'carousel';
+  const header = isCarousel ? null : buildHeaderComponent(payload);
   if (header) components.push(header);
   components.push(buildBodyComponent(payload));
+  if (isCarousel && payload.carousel) {
+    components.push(buildCarouselCreationComponent(payload.carousel));
+    return {
+      name: payload.name,
+      category: CATEGORY_TO_META[payload.category],
+      language: payload.language,
+      components,
+    };
+  }
   const footer = buildFooterComponent(payload);
   if (footer) components.push(footer);
   const buttons = buildButtonsComponent(payload);

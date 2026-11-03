@@ -2,9 +2,16 @@
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { parseBroadcastCsv } from '@/lib/broadcast-csv';
+import {
+  parseBroadcastCsvRows,
+  type BroadcastCsvRow,
+} from '@/lib/broadcast-csv';
+import { normalizeKey } from '@/lib/contacts/dedupe';
+import { listAllGroups, resolveGroupContactIds } from '@/lib/contacts/group-api';
 import { buildSampleContactCsv } from '@/lib/contacts/csv-sample';
-import { CustomField, Tag } from '@/types';
+import { usePlan } from '@/hooks/use-plan';
+import { useAuth } from '@/hooks/use-auth';
+import { ContactGroup, CustomField, Tag } from '@/types';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import {
@@ -18,10 +25,12 @@ import {
   ArrowRight,
   ArrowLeft,
   X,
+  AlertTriangle,
+  FolderClosed,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
-type AudienceType = 'all' | 'tags' | 'custom_field' | 'csv';
+type AudienceType = 'all' | 'tags' | 'groups' | 'custom_field' | 'csv';
 type CustomFieldOperator = 'is' | 'is_not' | 'contains';
 
 interface CustomFieldFilter {
@@ -33,9 +42,32 @@ interface CustomFieldFilter {
 interface AudienceConfig {
   type: AudienceType;
   tagIds?: string[];
+  /** Contact-group audience — see use-broadcast-sending. */
+  groupIds?: string[];
   customField?: CustomFieldFilter;
   csvContacts?: { phone: string; name?: string }[];
+  /** Duplicate-preserving CSV rows — see use-broadcast-sending. */
+  csvRows?: BroadcastCsvRow[];
+  csvFileName?: string;
   excludeTagIds?: string[];
+}
+
+/**
+ * Whole-file review for the CSV audience. Counts are computed against
+ * the real account (existing contacts, exclusion tags) so what the
+ * operator sees here is exactly what the send will freeze.
+ */
+interface CsvReview {
+  totalRows: number;
+  validRows: number;
+  uniqueNumbers: number;
+  repeatedRows: number;
+  newContacts: number;
+  existingContacts: number;
+  excludedRows: number;
+  skipped: { phone: string; name?: string; sourceRow: number; reason: string }[];
+  rowsToSend: number;
+  planBlock: 'contacts' | 'bulk_messages' | null;
 }
 
 interface Step2Props {
@@ -52,6 +84,8 @@ export function Step2SelectAudience({
   onBack,
 }: Step2Props) {
   const t = useTranslations('Broadcasts.wizard');
+  const { remaining, openUpgrade } = usePlan();
+  const { accountId } = useAuth();
 
   const OPERATOR_OPTIONS = useMemo<{ value: CustomFieldOperator; label: string }[]>(() => [
     { value: 'is', label: t('selectAudience.operatorIs') },
@@ -78,6 +112,12 @@ export function Step2SelectAudience({
       icon: Tags,
     },
     {
+      type: 'groups',
+      label: t('selectAudience.method.groups'),
+      description: t('selectAudience.groupDesc'),
+      icon: FolderClosed,
+    },
+    {
       type: 'custom_field',
       label: t('selectAudience.method.customField'),
       description: t('selectAudience.customFieldDesc'),
@@ -91,6 +131,8 @@ export function Step2SelectAudience({
     },
   ], [t]);
   const [tags, setTags] = useState<Tag[]>([]);
+  const [groups, setGroups] = useState<ContactGroup[]>([]);
+  const [loadingGroups, setLoadingGroups] = useState(false);
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [loadingTags, setLoadingTags] = useState(false);
   const [loadingFields, setLoadingFields] = useState(false);
@@ -101,6 +143,13 @@ export function Step2SelectAudience({
   // they survive stepping forward and back.
   const [pickedCsvName, setPickedCsvName] = useState<string | null>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
+  // Review computed once per uploaded file (see computeReview below).
+  const [review, setReview] = useState<CsvReview | null>(null);
+  // Skipped rows live here between the parse (file pick) and the
+  // review; kept out of `review` so the effect never reads stale state.
+  const [csvSkipped, setCsvSkipped] = useState<
+    { phone: string; name?: string; sourceRow: number; reason: string }[]
+  >([]);
 
   const csvCount = audience.csvContacts?.length ?? 0;
   // Only meaningful while the rows it produced are still in play —
@@ -121,6 +170,23 @@ export function Step2SelectAudience({
       }
     }
     fetchTags();
+  }, []);
+
+  // Groups back the "Send to Group(s)" audience — paged list so a
+  // large account's groups all show up in the picker.
+  useEffect(() => {
+    async function fetchGroups() {
+      setLoadingGroups(true);
+      try {
+        const supabase = createClient();
+        setGroups(await listAllGroups(supabase));
+      } catch {
+        setGroups([]);
+      } finally {
+        setLoadingGroups(false);
+      }
+    }
+    fetchGroups();
   }, []);
 
   // Lazy-load custom fields only when that audience type is active.
@@ -163,6 +229,16 @@ export function Step2SelectAudience({
           .in('tag_id', audience.tagIds);
         baseIds = new Set((data ?? []).map((r) => r.contact_id));
       } else if (
+        audience.type === 'groups' &&
+        audience.groupIds &&
+        audience.groupIds.length > 0
+      ) {
+        // ANY-group, de-duped server-side — one contact in two picked
+        // groups still counts once.
+        baseIds = new Set(
+          await resolveGroupContactIds(supabase, audience.groupIds)
+        );
+      } else if (
         audience.type === 'custom_field' &&
         audience.customField?.fieldId &&
         audience.customField.value
@@ -182,7 +258,13 @@ export function Step2SelectAudience({
         audience.csvContacts &&
         audience.csvContacts.length > 0
       ) {
-        setEstimatedCount(audience.csvContacts.length);
+        // Row-mode: the promise is one message per valid ROW (repeats
+        // included), so the estimate must count rows, not unique
+        // contacts. minus whatever the exclusion list will drop.
+        setEstimatedCount(
+          (audience.csvRows?.length ?? audience.csvContacts.length) -
+            (review?.excludedRows ?? 0),
+        );
         return;
       } else {
         // Partially-configured audience — wait for the user to finish.
@@ -219,9 +301,12 @@ export function Step2SelectAudience({
   }, [
     audience.type,
     audience.tagIds,
+    audience.groupIds,
     audience.customField,
     audience.csvContacts,
+    audience.csvRows,
     audience.excludeTagIds,
+    review,
   ]);
 
   useEffect(() => {
@@ -232,7 +317,11 @@ export function Step2SelectAudience({
     const selected = e.target.files?.[0];
     if (!selected) return;
 
-    const result = parseBroadcastCsv(await selected.text());
+    // Duplicate-PRESERVING mode: every valid row is its own recipient.
+    // The Contacts page importer keeps its skip-duplicates contract;
+    // only the broadcast audience sees a repeated number as a repeated
+    // message.
+    const result = parseBroadcastCsvRows(await selected.text());
 
     if (!result.ok) {
       toast.error(
@@ -244,22 +333,133 @@ export function Step2SelectAudience({
       // fires `change` (the browser suppresses it for an identical value).
       e.target.value = '';
       setPickedCsvName(null);
-      onUpdate({ ...audience, csvContacts: undefined });
+      setReview(null);
+      setCsvSkipped([]);
+      onUpdate({
+        ...audience,
+        csvContacts: undefined,
+        csvRows: undefined,
+        csvFileName: undefined,
+      });
       return;
     }
 
     // Rows without a leading `+` and country code were refused (issue
     // #586). Say so, or a spreadsheet export that stripped the `+` looks
-    // like a mysteriously smaller audience.
-    if (result.invalid > 0) {
+    // like a mysteriously smaller audience. The full list stays in the
+    // review block with a download.
+    if (result.review.skipped.length > 0) {
       toast.warning(
-        t('selectAudience.csvInvalidPhones', { count: result.invalid }),
+        t('selectAudience.csvInvalidPhones', { count: result.review.skipped.length }),
       );
     }
 
     setPickedCsvName(selected.name);
-    onUpdate({ ...audience, csvContacts: result.contacts });
+    setCsvSkipped(result.review.skipped);
+    onUpdate({
+      ...audience,
+      // Legacy shape kept for Step1's preview wiring.
+      csvContacts: result.rows.map(({ phone, name }) =>
+        name ? { phone, name } : { phone }
+      ),
+      csvRows: result.rows,
+      csvFileName: selected.name,
+    });
   }
+
+  /**
+   * Whole-file review: match every row number against the account's
+   * contacts and the exclusion tags, then run the plan pre-check for
+   * the WHOLE batch (new unique numbers vs the contact limit, rows to
+   * send vs the bulk quota). Runs when a file is picked or the
+   * exclusion list changes — the upsert the send path performs later
+   * is the same idempotent contact resolution, keyed on the number.
+   */
+  async function computeReview(
+    rows: BroadcastCsvRow[],
+    skipped: { phone: string; name?: string; sourceRow: number; reason: string }[],
+    excludeTagIds: string[],
+  ) {
+    const supabase = createClient();
+    const keys = [...new Set(rows.map((r) => r.key))];
+
+    const existingKeys = new Set<string>();
+    const LOOKUP_CHUNK = 500; // PostgREST .in(...) bound
+    for (let i = 0; i < keys.length; i += LOOKUP_CHUNK) {
+      const { data } = await supabase
+        .from('contacts')
+        .select('phone')
+        .in('phone_normalized', keys.slice(i, i + LOOKUP_CHUNK));
+      for (const c of data ?? []) {
+        const k = normalizeKey((c as { phone: string }).phone ?? '');
+        if (k) existingKeys.add(k);
+      }
+    }
+
+    // How many ROWS the exclusion list will drop: excluded contact ids
+    // mapped back onto normalized numbers, then counted per row.
+    let excludedRows = 0;
+    if (excludeTagIds.length > 0) {
+      const { data: tagRows } = await supabase
+        .from('contact_tags')
+        .select('contact_id')
+        .in('tag_id', excludeTagIds);
+      const excludedContactIds = [...new Set((tagRows ?? []).map((r) => r.contact_id))];
+      if (excludedContactIds.length > 0) {
+        const excludedKeys = new Set<string>();
+        const ID_CHUNK = 500;
+        for (let i = 0; i < excludedContactIds.length; i += ID_CHUNK) {
+          const { data } = await supabase
+            .from('contacts')
+            .select('phone')
+            .in('id', excludedContactIds.slice(i, i + ID_CHUNK));
+          for (const c of data ?? []) {
+            const k = normalizeKey((c as { phone: string }).phone ?? '');
+            if (k) excludedKeys.add(k);
+          }
+        }
+        excludedRows = rows.filter((r) => excludedKeys.has(r.key)).length;
+      }
+    }
+
+    const uniqueNumbers = keys.length;
+    const existingNumbers = keys.filter((k) => existingKeys.has(k)).length;
+    const newContacts = uniqueNumbers - existingNumbers;
+    const rowsToSend = rows.length - excludedRows;
+
+    // Plan pre-check (whole batch, before anything is sent): the
+    // contact limit counts only NEW unique numbers; the bulk quota
+    // counts every row, repeats included — each is a real message.
+    let planBlock: CsvReview['planBlock'] = null;
+    if (newContacts > remaining('contacts')) planBlock = 'contacts';
+    else if (rowsToSend > remaining('bulk_messages')) planBlock = 'bulk_messages';
+
+    setReview({
+      totalRows: rows.length + skipped.length,
+      validRows: rows.length,
+      uniqueNumbers,
+      repeatedRows: Math.max(0, rows.length - uniqueNumbers),
+      newContacts,
+      existingContacts: existingNumbers,
+      excludedRows,
+      skipped,
+      rowsToSend,
+      planBlock,
+    });
+  }
+
+  // (Re)compute the review whenever the rows or the exclusion list
+  // change. All setStates land after awaits — no sync-in-effect.
+  const excludeKey = (audience.excludeTagIds ?? []).join(',');
+  useEffect(() => {
+    if (audience.type !== 'csv' || !audience.csvRows || audience.csvRows.length === 0) {
+      setReview(null);
+      return;
+    }
+    if (!accountId) return; // RLS-scoped lookups need an account context
+    void computeReview(audience.csvRows, csvSkipped, audience.excludeTagIds ?? []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, audience.type, audience.csvRows, csvSkipped, excludeKey]);
 
   // Hand the user a ready-to-fill template matching the format the parser
   // expects (Name, CountryCode, Whatsapp — no `+`, country code split out).
@@ -277,12 +477,47 @@ export function Step2SelectAudience({
     URL.revokeObjectURL(url);
   }
 
+  // Review rows carry their file line numbers, so the skipped list
+  // downloads exactly as the spreadsheet exported it — row number first
+  // — and the corrected file re-picks cleanly.
+  function downloadSkippedCsv() {
+    if (!review || review.skipped.length === 0) return;
+    const csvRows = [
+      ['row', 'phone', 'name', 'reason'],
+      ...review.skipped.map((s) => [
+        String(s.sourceRow),
+        s.phone,
+        s.name ?? '',
+        s.reason,
+      ]),
+    ];
+    const blob = new Blob([csvRows.map((r) => r.join(',')).join('\r\n')], {
+      type: 'text/csv;charset=utf-8;',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'skipped-rows.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
   function toggleTag(tagId: string) {
     const current = audience.tagIds ?? [];
     const updated = current.includes(tagId)
       ? current.filter((id) => id !== tagId)
       : [...current, tagId];
     onUpdate({ ...audience, tagIds: updated });
+  }
+
+  function toggleGroup(groupId: string) {
+    const current = audience.groupIds ?? [];
+    const updated = current.includes(groupId)
+      ? current.filter((id) => id !== groupId)
+      : [...current, groupId];
+    onUpdate({ ...audience, groupIds: updated });
   }
 
   function toggleExcludeTag(tagId: string) {
@@ -302,15 +537,37 @@ export function Step2SelectAudience({
     onUpdate({ ...audience, customField: { ...prev, ...patch } });
   }
 
+  // A CSV audience isn't ready until its whole-file review is done and
+  // inside the plan's limits — "Next" blocks exactly what the send
+  // would have to refuse later.
+  const csvReady =
+    audience.type !== 'csv' ||
+    (!!review && review.planBlock === null && review.rowsToSend > 0);
+
+  // A groups audience with no resolvable members (all picked groups are
+  // empty, or every member lands on an exclude tag) sends nothing —
+  // block "Next" here instead of failing at send time.
+  const groupsEmpty =
+    audience.type === 'groups' &&
+    !!audience.groupIds &&
+    audience.groupIds.length > 0 &&
+    !loadingCount &&
+    estimatedCount === 0;
+
   const isValid =
-    audience.type === 'all' ||
-    (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) ||
-    (audience.type === 'custom_field' &&
-      !!audience.customField?.fieldId &&
-      audience.customField.value.length > 0) ||
-    (audience.type === 'csv' &&
-      audience.csvContacts &&
-      audience.csvContacts.length > 0);
+    csvReady &&
+    (audience.type === 'all' ||
+      (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) ||
+      (audience.type === 'groups' &&
+        audience.groupIds &&
+        audience.groupIds.length > 0 &&
+        !groupsEmpty) ||
+      (audience.type === 'custom_field' &&
+        !!audience.customField?.fieldId &&
+        audience.customField.value.length > 0) ||
+      (audience.type === 'csv' &&
+        audience.csvContacts &&
+        audience.csvContacts.length > 0));
 
   return (
     <div className="space-y-6">
@@ -335,12 +592,18 @@ export function Step2SelectAudience({
                   // Wipe shape fields from other types to avoid stale
                   // config leaking across selections.
                   tagIds: option.type === 'tags' ? audience.tagIds : undefined,
+                  groupIds:
+                    option.type === 'groups' ? audience.groupIds : undefined,
                   customField:
                     option.type === 'custom_field'
                       ? audience.customField
                       : undefined,
                   csvContacts:
                     option.type === 'csv' ? audience.csvContacts : undefined,
+                  csvRows:
+                    option.type === 'csv' ? audience.csvRows : undefined,
+                  csvFileName:
+                    option.type === 'csv' ? audience.csvFileName : undefined,
                 })
               }
               className={`flex items-start gap-3 rounded-xl border p-4 text-left transition-all ${
@@ -400,6 +663,50 @@ export function Step2SelectAudience({
                   </button>
                 );
               })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {audience.type === 'groups' && (
+        <div className="rounded-xl border border-border bg-card/50 p-4">
+          <p className="mb-3 text-sm font-medium text-foreground">{t('selectAudience.selectGroups')}</p>
+          {loadingGroups ? (
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          ) : groups.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              {t('selectAudience.noGroupsFound')}
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {groups.map((group) => {
+                const isSelected = audience.groupIds?.includes(group.id);
+                return (
+                  <button
+                    key={group.id}
+                    onClick={() => toggleGroup(group.id)}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all ${
+                      isSelected
+                        ? 'border-primary/30 bg-primary/10 text-primary'
+                        : 'border-border bg-muted text-muted-foreground hover:border-border'
+                    }`}
+                  >
+                    <FolderClosed className="h-3 w-3" />
+                    {group.name}
+                    <span className="tabular-nums opacity-70">
+                      ({(group.member_count ?? 0).toLocaleString()})
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {groupsEmpty && (
+            <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+              <p className="text-xs text-amber-300">
+                {t('selectAudience.groupsEmptyWarning')}
+              </p>
             </div>
           )}
         </div>
@@ -506,6 +813,114 @@ export function Step2SelectAudience({
               {t('selectAudience.downloadSampleCsv')}
             </button>
           </div>
+
+          {/* Whole-file review — every valid row sends, repeats included. */}
+          {audience.csvRows && audience.csvRows.length > 0 && (
+            <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
+              {review ? (
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-3">
+                  <p className="text-muted-foreground">
+                    {t('selectAudience.csvReviewTotal')}
+                    <span className="ml-1 font-medium text-foreground">
+                      {review.totalRows.toLocaleString()}
+                    </span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    {t('selectAudience.csvReviewValid')}
+                    <span className="ml-1 font-medium text-foreground">
+                      {review.validRows.toLocaleString()}
+                    </span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    {t('selectAudience.csvReviewUnique')}
+                    <span className="ml-1 font-medium text-foreground">
+                      {review.uniqueNumbers.toLocaleString()}
+                    </span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    {t('selectAudience.csvReviewRepeated')}
+                    <span className="ml-1 font-medium text-foreground">
+                      {review.repeatedRows.toLocaleString()}
+                    </span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    {t('selectAudience.csvReviewNewContacts')}
+                    <span className="ml-1 font-medium text-foreground">
+                      {review.newContacts.toLocaleString()}
+                    </span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    {t('selectAudience.csvReviewExistingContacts')}
+                    <span className="ml-1 font-medium text-foreground">
+                      {review.existingContacts.toLocaleString()}
+                    </span>
+                  </p>
+                  {review.excludedRows > 0 && (
+                    <p className="text-muted-foreground">
+                      {t('selectAudience.csvReviewExcluded')}
+                      <span className="ml-1 font-medium text-red-400">
+                        {review.excludedRows.toLocaleString()}
+                      </span>
+                    </p>
+                  )}
+                  <p className="text-muted-foreground">
+                    {t('selectAudience.csvReviewSkipped')}
+                    <span className="ml-1 font-medium text-foreground">
+                      {review.skipped.length.toLocaleString()}
+                    </span>
+                  </p>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                  <span className="text-xs text-muted-foreground">
+                    {t('selectAudience.csvReviewCalculating')}
+                  </span>
+                </div>
+              )}
+
+              <p className="text-xs text-muted-foreground">
+                {t('selectAudience.csvReviewEveryRow')}
+              </p>
+
+              {review && review.skipped.length > 0 && (
+                <button
+                  type="button"
+                  onClick={downloadSkippedCsv}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  {t('selectAudience.csvReviewDownloadSkipped')}
+                </button>
+              )}
+
+              {review?.planBlock && (
+                <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+                  <div className="space-y-2">
+                    <p className="text-xs text-red-300">
+                      {t('selectAudience.csvReviewPlanBlock', {
+                        count:
+                          review.planBlock === 'contacts'
+                            ? review.newContacts
+                            : review.rowsToSend,
+                        remaining: remaining(review.planBlock),
+                      })}
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        openUpgrade({ intent: 'upgrade', feature: review.planBlock ?? undefined })
+                      }
+                    >
+                      {t('selectAudience.csvReviewUpgrade')}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

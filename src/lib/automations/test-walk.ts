@@ -248,7 +248,7 @@ export function describeNode(
   ctx: TestContext,
   resources: {
     tagNames: Record<string, string>
-    templates: Record<string, { body_text: string; buttons?: { text: string }[] }>
+    templates: Record<string, { body_text: string; buttons?: { text: string }[]; header_type?: string }>
     flowNames: Record<string, string>
   },
 ): NodeProcessing {
@@ -370,9 +370,17 @@ export function describeNode(
         body = bodyVars.join(', ')
       }
       const buttons = (tmpl?.buttons ?? []).map((b) => b.text)
+      const system = name ? [] : [sys('Template node has no template selected', 'warn')]
+      // Carousel templates never crash this path — they simply can't be
+      // sent from automations in this version (Broadcasts only).
+      if (tmpl?.header_type === 'carousel') {
+        system.push(
+          sys('Carousel templates can be sent from Broadcasts only — this node would not deliver', 'warn'),
+        )
+      }
       return {
         bubble: { type: 'template', name, language, body: body || '', buttons },
-        system: name ? [] : [sys('Template node has no template selected', 'warn')],
+        system,
         awaits: null,
         nextHandle: null,
       }

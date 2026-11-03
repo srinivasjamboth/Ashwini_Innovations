@@ -477,9 +477,14 @@ export function SendTemplateFields({
         <option value="">{t("templates.select")}</option>
         {templates.map((tmpl) => {
           const lang = tmpl.language ?? "en_US"
+          // Carousel templates are Broadcasts-only in this version: show
+          // them disabled with a note instead of hiding them, so the
+          // picker stays honest about what exists.
+          const isCarousel = tmpl.header_type === "carousel"
           return (
-            <option key={tmpl.id} value={toValue(tmpl.name, lang)}>
+            <option key={tmpl.id} value={toValue(tmpl.name, lang)} disabled={isCarousel}>
               {tmpl.name} ({lang})
+              {isCarousel ? ` — ${t("templates.broadcastOnly")}` : ""}
             </option>
           )
         })}

@@ -107,13 +107,23 @@ export function TemplateViewDialog({
         {!loading && !error && template && (
           <div className="mx-auto w-[300px] max-w-full">
             <TemplatePreview
-              headerFormat={(template.header_type ?? 'none') as 'none' | 'text' | 'image' | 'video' | 'document'}
+              headerFormat={(template.header_type ?? 'none') as
+                | 'none'
+                | 'text'
+                | 'image'
+                | 'video'
+                | 'document'
+                | 'carousel'}
               headerContent={template.header_content ?? ''}
               headerMediaUrl={template.header_media_url ?? ''}
               bodyText={template.body_text ?? ''}
               bodySamples={template.sample_values?.body ?? []}
               footerText={template.footer_text ?? ''}
               buttons={template.buttons ?? []}
+              // Carousel rows preview from their stored card document —
+              // without this a carousel template renders as an empty
+              // bubble (headerFormat says carousel, data is missing).
+              carousel={template.carousel ?? null}
               businessName={accountName}
               showButtonIcons
               scrollableContent

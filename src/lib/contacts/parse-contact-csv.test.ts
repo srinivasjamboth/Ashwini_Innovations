@@ -129,4 +129,42 @@ Alice,a@b.com`;
     expect(result.hasPhoneColumn).toBe(false);
     expect(result.rows).toEqual([]);
   });
+
+  it('strips a UTF-8 BOM so the phone header is still found', () => {
+    const csv = `\uFEFFphone,name
++15551234567,Alice`;
+
+    const result = parseContactCsv(csv);
+    expect(result.hasPhoneColumn).toBe(true);
+    expect(result.rows[0].phone).toBe('+15551234567');
+  });
+
+  it('keeps a quoted cell containing a newline inside one record', () => {
+    const csv = `phone,name
++15551234567,"Multi\nLine Name"`;
+
+    const result = parseContactCsv(csv);
+    expect(result.rows).toHaveLength(1);
+    // The record survives as one row; the embedded newline is part of
+    // the name cell until the downstream cell scrubbers flatten it.
+    expect(result.rows[0].name).toContain('Multi');
+  });
+
+  it('omits sourceRow unless row numbers are requested', () => {
+    const csv = `phone,name
++15551234567,Alice`;
+
+    expect(parseContactCsv(csv).rows[0]).not.toHaveProperty('sourceRow');
+  });
+
+  it('numbers physical lines when row numbers are requested', () => {
+    const csv = `phone,name
++15551234567,Alice
+
++15559876543,Bob
++15550000000,"Raw\nMurthy"`;
+
+    const { rows } = parseContactCsv(csv, true);
+    expect(rows.map((r) => r.sourceRow)).toEqual([2, 4, 5]);
+  });
 });

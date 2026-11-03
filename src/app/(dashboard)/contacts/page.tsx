@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { toast } from 'sonner';
-import type { Contact, Tag, ContactTag } from '@/types';
+import type { Contact, Tag, ContactTag, ContactGroup } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -49,11 +49,15 @@ import {
   SlidersHorizontal,
   Filter,
   X,
+  FolderClosed,
 } from 'lucide-react';
 import { ContactForm } from '@/components/contacts/contact-form';
 import { ContactDetailView } from '@/components/contacts/contact-detail-view';
 import { ImportModal } from '@/components/contacts/import-modal';
 import { CustomFieldsManager } from '@/components/contacts/custom-fields-manager';
+import { ContactsTabs } from '@/components/contacts/contacts-tabs';
+import { AddToGroupDialog } from '@/components/contacts/groups/add-to-group-dialog';
+import { filterContactsByGroups, listAllGroups } from '@/lib/contacts/group-api';
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { useTranslations } from 'next-intl';
@@ -77,6 +81,10 @@ export default function ContactsPage() {
   const [totalCount, setTotalCount] = useState(0);
   // Tag filter — contacts shown must have ANY of these tags (OR).
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  // Group filter — contacts in ANY of these groups (the two dimensions
+  // AND together, resolved by filter_contacts_by_groups server-side).
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [groups, setGroups] = useState<ContactGroup[]>([]);
 
   // Modals
   const [formOpen, setFormOpen] = useState(false);
@@ -93,6 +101,7 @@ export default function ContactsPage() {
   // Bulk selection (page-scoped — only the loaded rows are selectable)
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [addToGroupOpen, setAddToGroupOpen] = useState(false);
 
   // All tags for display
   const [tagsMap, setTagsMap] = useState<Record<string, Tag>>({});
@@ -118,6 +127,24 @@ export default function ContactsPage() {
     }
   }, [supabase]);
 
+  // All groups (with live member counts) for the filter + the bulk
+  // "Add to group" picker. Paged via the list RPC, never the capped
+  // plain select.
+  const fetchGroups = useCallback(async () => {
+    try {
+      const all = await listAllGroups(supabase);
+      setGroups(all);
+      const ids = new Set(all.map((g) => g.id));
+      setSelectedGroupIds((prev) => {
+        const pruned = prev.filter((id) => ids.has(id));
+        return pruned.length === prev.length ? prev : pruned;
+      });
+    } catch {
+      // Non-fatal: the table still works without the group dimension.
+      setGroups([]);
+    }
+  }, [supabase]);
+
   const fetchContacts = useCallback(async () => {
     const seq = ++fetchSeq.current;
     setLoading(true);
@@ -133,7 +160,29 @@ export default function ContactsPage() {
     let contactRows: Contact[];
     let count: number;
 
-    if (selectedTagIds.length > 0) {
+    if (selectedGroupIds.length > 0) {
+      // Group filter active (with the optional tag AND-dimension) —
+      // resolved server-side by filter_contacts_by_groups (migration
+      // 056): ANY group, DISTINCT contacts, windowed total, one
+      // round-trip that can never truncate at the PostgREST cap.
+      try {
+        const res = await filterContactsByGroups(supabase, {
+          groupIds: selectedGroupIds,
+          tagIds: selectedTagIds,
+          search: term,
+          limit: PAGE_SIZE,
+          offset: from,
+        });
+        if (seq !== fetchSeq.current) return; // superseded by a newer fetch
+        contactRows = res.contacts;
+        count = res.total;
+      } catch {
+        if (seq !== fetchSeq.current) return;
+        toast.error(t('toastFailedLoad'));
+        setLoading(false);
+        return;
+      }
+    } else if (selectedTagIds.length > 0) {
       // Tag filter active — resolve it server-side (join + distinct +
       // windowed total count + pagination) so a tag covering many
       // contacts can't silently truncate the result or overflow an IN
@@ -207,7 +256,7 @@ export default function ContactsPage() {
 
     setContacts(enriched);
     setLoading(false);
-  }, [supabase, page, search, selectedTagIds, tagsMap, t]);
+  }, [supabase, page, search, selectedTagIds, selectedGroupIds, tagsMap, t]);
 
   // Load-once-on-mount-ish data fetches. Each setter inside runs
   // inside an async promise completion (Supabase await), not
@@ -217,6 +266,11 @@ export default function ContactsPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchTags();
   }, [fetchTags]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchGroups();
+  }, [fetchGroups]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -318,12 +372,19 @@ export default function ContactsPage() {
   const hasNext = page < totalPages - 1;
   const hasPrev = page > 0;
 
-  // Tag filter helpers. Every change resets to page 0 — the result set
-  // shrinks/grows so page N may no longer be valid (mirrors the search box).
+  // Filter helpers (tags + groups). Every change resets to page 0 — the
+  // result set shrinks/grows so page N may no longer be valid (mirrors
+  // the search box).
   const allTags = Object.values(tagsMap).sort((a, b) =>
     a.name.localeCompare(b.name)
   );
-  const hasActiveFilters = search.trim().length > 0 || selectedTagIds.length > 0;
+  const sortedGroups = [...groups].sort((a, b) => a.name.localeCompare(b.name));
+  const hasTagOrGroupSelection =
+    selectedTagIds.length > 0 || selectedGroupIds.length > 0;
+  const hasActiveFilters =
+    search.trim().length > 0 ||
+    selectedTagIds.length > 0 ||
+    selectedGroupIds.length > 0;
 
   function toggleTagFilter(tagId: string) {
     setSelectedTagIds((prev) =>
@@ -334,13 +395,25 @@ export default function ContactsPage() {
     setPage(0);
   }
 
-  function clearTagFilters() {
+  function toggleGroupFilter(groupId: string) {
+    setSelectedGroupIds((prev) =>
+      prev.includes(groupId)
+        ? prev.filter((id) => id !== groupId)
+        : [...prev, groupId]
+    );
+    setPage(0);
+  }
+
+  function clearFilters() {
     setSelectedTagIds([]);
+    setSelectedGroupIds([]);
     setPage(0);
   }
 
   return (
     <div className="space-y-6">
+      <ContactsTabs />
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -410,34 +483,37 @@ export default function ContactsPage() {
               }
             >
               <Filter className="size-4" />
-              {t('filterByTags')}
-              {selectedTagIds.length > 0 && (
+              {t('filtersBtn')}
+              {selectedTagIds.length + selectedGroupIds.length > 0 && (
                 <span className="ml-1 inline-flex items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
-                  {selectedTagIds.length}
+                  {selectedTagIds.length + selectedGroupIds.length}
                 </span>
               )}
             </PopoverTrigger>
             <PopoverContent align="start" className="w-64 p-0">
               <div className="flex items-center justify-between px-3 py-2 border-b border-border">
                 <span className="text-sm font-medium text-popover-foreground">
-                  {t('filterByTags')}
+                  {t('filtersBtn')}
                 </span>
-                {selectedTagIds.length > 0 && (
+                {hasTagOrGroupSelection && (
                   <button
-                    onClick={clearTagFilters}
+                    onClick={clearFilters}
                     className="text-xs text-muted-foreground hover:text-foreground"
                   >
                     {t('clearAll')}
                   </button>
                 )}
               </div>
-              {allTags.length === 0 ? (
-                <p className="px-3 py-4 text-sm text-muted-foreground text-center">
-                  {t('noTagsYet')}
+              <div className="max-h-64 overflow-y-auto py-1">
+                <p className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {t('filterSectionTags')}
                 </p>
-              ) : (
-                <div className="max-h-64 overflow-y-auto py-1">
-                  {allTags.map((tag) => (
+                {allTags.length === 0 ? (
+                  <p className="px-3 py-2 text-sm text-muted-foreground text-center">
+                    {t('noTagsYet')}
+                  </p>
+                ) : (
+                  allTags.map((tag) => (
                     <label
                       key={tag.id}
                       className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-muted/50"
@@ -455,22 +531,51 @@ export default function ContactsPage() {
                         {tag.name}
                       </span>
                     </label>
-                  ))}
-                </div>
-              )}
+                  ))
+                )}
+                <div className="my-1 border-t border-border" />
+                <p className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {t('filterSectionGroups')}
+                </p>
+                {sortedGroups.length === 0 ? (
+                  <p className="px-3 py-2 text-sm text-muted-foreground text-center">
+                    {t('noGroupsYet')}
+                  </p>
+                ) : (
+                  sortedGroups.map((group) => (
+                    <label
+                      key={group.id}
+                      className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-muted/50"
+                    >
+                      <Checkbox
+                        checked={selectedGroupIds.includes(group.id)}
+                        onCheckedChange={() => toggleGroupFilter(group.id)}
+                        aria-label={`Filter by group ${group.name}`}
+                      />
+                      <FolderClosed className="size-3.5 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate text-sm text-popover-foreground">
+                        {group.name}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground tabular-nums">
+                        {group.member_count ?? 0}
+                      </span>
+                    </label>
+                  ))
+                )}
+              </div>
             </PopoverContent>
           </Popover>
         </div>
 
-        {/* Active tag-filter chips */}
-        {selectedTagIds.length > 0 && (
+        {/* Active tag + group filter chips */}
+        {hasTagOrGroupSelection && (
           <div className="flex flex-wrap items-center gap-1.5">
             {selectedTagIds.map((id) => {
               const tag = tagsMap[id];
               if (!tag) return null;
               return (
                 <span
-                  key={id}
+                  key={`tag-${id}`}
                   className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
                   style={{
                     backgroundColor: tag.color + '20',
@@ -488,9 +593,29 @@ export default function ContactsPage() {
                 </span>
               );
             })}
+            {selectedGroupIds.map((id) => {
+              const group = groups.find((g) => g.id === id);
+              if (!group) return null;
+              return (
+                <span
+                  key={`group-${id}`}
+                  className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground"
+                >
+                  <FolderClosed className="size-3" />
+                  {group.name}
+                  <button
+                    onClick={() => toggleGroupFilter(id)}
+                    aria-label={`Remove ${group.name} filter`}
+                    className="hover:opacity-70"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </span>
+              );
+            })}
             <button
-              onClick={clearTagFilters}
-              className="text-xs text-muted-foreground hover:text-foreground px-1"
+              onClick={clearFilters}
+              className="px-1 text-xs text-muted-foreground hover:text-foreground"
             >
               {t('clearAll')}
             </button>
@@ -513,6 +638,16 @@ export default function ContactsPage() {
             >
               {t('clearSelection')}
             </Button>
+            <GatedButton
+              variant="outline"
+              size="sm"
+              canAct={canEdit}
+              gateReason="add contacts to a group"
+              onClick={() => setAddToGroupOpen(true)}
+            >
+              <FolderClosed className="size-4" />
+              {t('addToGroupBtn')}
+            </GatedButton>
             <GatedButton
               variant="destructive"
               size="sm"
@@ -757,7 +892,23 @@ export default function ContactsPage() {
       <ImportModal
         open={importOpen}
         onOpenChange={setImportOpen}
-        onImported={fetchContacts}
+        onImported={() => {
+          fetchContacts();
+        }}
+      />
+
+      {/* Bulk Add to group */}
+      <AddToGroupDialog
+        open={addToGroupOpen}
+        onOpenChange={setAddToGroupOpen}
+        contactIds={[...selected]}
+        allMatching={{
+          total: totalCount,
+          tagIds: selectedTagIds,
+          groupIds: selectedGroupIds,
+          search: search.trim() || undefined,
+        }}
+        onDone={() => setSelected(new Set())}
       />
 
       {/* Custom Fields Manager (admin+) */}

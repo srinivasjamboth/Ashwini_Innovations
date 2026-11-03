@@ -20,6 +20,7 @@ import {
   FileText,
   Type as TypeIcon,
   Minus,
+  GalleryHorizontalEnd,
 } from 'lucide-react';
 import type { MessageTemplate, MessageTemplateStatus } from '@/types';
 import { templateStatusConfig } from '@/lib/template-status';
@@ -701,6 +702,7 @@ function HeaderTypeBadge({ type }: { type: NonNullable<MessageTemplate['header_t
     video: { label: t('headerVideo'), icon: Video },
     document: { label: t('headerDocument'), icon: FileText },
     text: { label: t('headerText'), icon: TypeIcon },
+    carousel: { label: t('headerCarousel'), icon: GalleryHorizontalEnd },
     none: { label: t('headerNone'), icon: Minus },
   } as const;
   const { label, icon: Icon } = map[type] ?? map.none;

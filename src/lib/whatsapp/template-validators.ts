@@ -16,6 +16,7 @@
  */
 
 import type {
+  CarouselTemplateData,
   MessageTemplate,
   TemplateButton,
   TemplateSampleValues,
@@ -46,6 +47,13 @@ export interface TemplatePayload {
   footer_text?: string;
   buttons?: TemplateButton[];
   sample_values?: TemplateSampleValues;
+  /**
+   * Only set when `header_type === 'carousel'`: the card document that
+   * stands in for a header, a footer and top-level buttons. Imported as
+   * a type only, so this module keeps no runtime dependency on the
+   * carousel code path.
+   */
+  carousel?: CarouselTemplateData | null;
 }
 
 export function validateTemplateName(name: string): void {
@@ -124,6 +132,12 @@ export function validateHeader(
 ): HeaderValidationResult {
   const { header_type, header_content, header_media_url, header_handle } = payload;
   if (!header_type) return { variableCount: 0 };
+
+  // A carousel has no header component of its own — every card carries
+  // its own media. Its rules live in `validateCarouselSubmission`, so
+  // the header validators (and the "media header needs a url/handle"
+  // requirement below) must not fire for it.
+  if (header_type === 'carousel') return { variableCount: 0 };
 
   if (header_type === 'text') {
     if (!header_content || !header_content.trim()) {

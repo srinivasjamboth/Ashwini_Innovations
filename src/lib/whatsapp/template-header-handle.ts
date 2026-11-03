@@ -1,5 +1,6 @@
 import { uploadResumableMedia } from '@/lib/whatsapp/meta-api'
 import { MEDIA_HEADER_SPECS, isMediaHeaderKind } from '@/lib/whatsapp/media-header-types'
+import type { MediaHeaderKind } from '@/lib/whatsapp/media-header-types'
 import type { TemplatePayload } from '@/lib/whatsapp/template-validators'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 
@@ -23,31 +24,29 @@ import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 const UNREACHABLE_MESSAGE =
   'Could not fetch the header media URL. Make sure it is publicly reachable.'
 
-export async function ensureMediaHeaderHandle(
-  payload: TemplatePayload,
-  accessToken: string,
-): Promise<void> {
-  const kind = payload.header_type
-  if (!isMediaHeaderKind(kind)) return
-  if (payload.header_handle) return // already have one
-  if (!payload.header_media_url) return // validator already requires url-or-handle
-
+/**
+ * Fetch a caller-supplied media URL and check it against Meta's accepted
+ * formats and size ceiling for `kind`. Shared by the media-header helper
+ * below and the carousel card handles (`carousel-card-handle.ts`) so the
+ * SSRF guard, the redirect rule and the format checks can never drift
+ * apart between the two paths.
+ *
+ * Throws the same `UNREACHABLE_MESSAGE` for a refused destination and an
+ * unreachable one, so the error cannot be used as an SSRF oracle.
+ */
+export async function fetchMediaForUpload(
+  url: string,
+  kind: MediaHeaderKind,
+): Promise<{ bytes: Uint8Array; mimeType: string; fileName: string }> {
   const spec = MEDIA_HEADER_SPECS[kind]
 
-  const appId = process.env.META_APP_ID
-  if (!appId) {
-    throw new Error(
-      'Media-header templates need META_APP_ID set (used for Meta’s Resumable Upload). Add it to your environment, or remove the media header.',
-    )
-  }
-
-  // SSRF guard: `header_media_url` is caller-supplied (any authenticated
-  // member can submit a template) and the fetch below happens server-side,
-  // so refuse any destination that resolves to a private / loopback /
-  // link-local / reserved address. Same guard as the two other
-  // outbound-fetch call sites (see lib/webhooks/ssrf.ts) — matching the
-  // unreachable-host message keeps the failure from being an oracle.
-  if (!(await isDeliverableUrl(payload.header_media_url))) {
+  // SSRF guard: `url` is caller-supplied (any authenticated member can
+  // submit a template) and the fetch below happens server-side, so refuse
+  // any destination that resolves to a private / loopback / link-local /
+  // reserved address. Same guard as the two other outbound-fetch call
+  // sites (see lib/webhooks/ssrf.ts) — matching the unreachable-host
+  // message keeps the failure from being an oracle.
+  if (!(await isDeliverableUrl(url))) {
     throw new Error(UNREACHABLE_MESSAGE)
   }
 
@@ -55,7 +54,7 @@ export async function ensureMediaHeaderHandle(
   // a manually-pasted public link).
   let res: Response
   try {
-    res = await fetch(payload.header_media_url, {
+    res = await fetch(url, {
       // Do NOT follow redirects — a public URL could 3xx-bounce to an
       // internal address, defeating the guard above. Bound the request so
       // a hung host can't tie up the template-submit handler.
@@ -87,7 +86,32 @@ export async function ensureMediaHeaderHandle(
   // A sample served without a Content-Type is assumed to be the kind's
   // most common format (JPEG / MP4 / PDF).
   const mimeType = spec.mimeTypes.includes(contentType) ? contentType : spec.mimeTypes[0]
-  const fileName = `header.${spec.extensions[mimeType]}`
+  return { bytes, mimeType, fileName: `header.${spec.extensions[mimeType]}` }
+}
+
+/** META_APP_ID is what the Resumable Upload is keyed on; both call sites need it. */
+export function requireMetaAppId(): string {
+  const appId = process.env.META_APP_ID
+  if (!appId) {
+    throw new Error(
+      'Media-header templates need META_APP_ID set (used for Meta’s Resumable Upload). Add it to your environment, or remove the media header.',
+    )
+  }
+  return appId
+}
+
+export async function ensureMediaHeaderHandle(
+  payload: TemplatePayload,
+  accessToken: string,
+): Promise<void> {
+  const kind = payload.header_type
+  if (!isMediaHeaderKind(kind)) return
+  if (payload.header_handle) return // already have one
+  if (!payload.header_media_url) return // validator already requires url-or-handle
+
+  const appId = requireMetaAppId()
+
+  const { bytes, mimeType, fileName } = await fetchMediaForUpload(payload.header_media_url, kind)
 
   const { handle } = await uploadResumableMedia({
     appId,

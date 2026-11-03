@@ -14,12 +14,14 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { TemplatePreview } from '@/components/settings/template-preview';
+import { parseCarousel } from '@/lib/whatsapp/carousel';
 import {
   ArrowRight,
   ChevronLeft,
   ChevronRight,
   RefreshCw,
   FileText,
+  Images,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
@@ -261,6 +263,19 @@ export function Step1ChooseTemplate({
 
   const recipientLabel = recipient ? recipient.name || recipient.phone : '';
 
+  // Carousel templates preview exactly like the builder: the shared
+  // PhoneMockup carousel mode reads the parsed card document (the row
+  // ships it via select('*')); `parseCarousel` degrades a malformed
+  // document to null instead of throwing, so the preview just falls
+  // back to the body bubble.
+  const carouselData = useMemo(
+    () =>
+      selectedTemplate?.header_type === 'carousel'
+        ? parseCarousel(selectedTemplate.carousel)
+        : null,
+    [selectedTemplate],
+  );
+
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-10">
       {/* ---------------- Left: the form ---------------- */}
@@ -342,9 +357,17 @@ export function Step1ChooseTemplate({
                     className="items-start py-1.5"
                   >
                     <span className="flex min-w-0 flex-col">
-                      <span className="truncate">{template.name}</span>
+                      <span className="truncate flex items-center gap-1.5">
+                        {template.header_type === 'carousel' && (
+                          <Images className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />
+                        )}
+                        {template.name}
+                      </span>
                       <span className="whitespace-normal text-xs text-muted-foreground">
                         {template.category} · {template.language ?? 'en_US'}
+                        {template.header_type === 'carousel' && (
+                          <> · {t('chooseTemplate.carouselTag')}</>
+                        )}
                       </span>
                     </span>
                   </SelectItem>
@@ -381,13 +404,15 @@ export function Step1ChooseTemplate({
             | 'text'
             | 'image'
             | 'video'
-            | 'document'}
+            | 'document'
+            | 'carousel'}
           headerContent={selectedTemplate?.header_content ?? ''}
           headerMediaUrl={selectedTemplate?.header_media_url ?? ''}
           bodyText={selectedTemplate?.body_text ?? ''}
           bodySamples={bodySamples}
           footerText={selectedTemplate?.footer_text ?? ''}
           buttons={selectedTemplate?.buttons ?? []}
+          carousel={carouselData}
           businessName={businessName}
           businessInitials={initialsOf(businessName)}
           showButtonIcons

@@ -20,7 +20,11 @@
  */
 
 import { dedupeByPhone } from '@/lib/contacts/dedupe';
-import { parseContactCsv } from '@/lib/contacts/parse-contact-csv';
+import {
+  parseContactCsv,
+  type ParsedContactRow,
+} from '@/lib/contacts/parse-contact-csv';
+import { parseInternationalPhone } from '@/lib/whatsapp/phone-utils';
 
 /** The shape the wizard hands to `createAndSendBroadcast`. */
 export interface BroadcastCsvContact {
@@ -66,5 +70,107 @@ export function parseBroadcastCsv(text: string): ParseBroadcastCsvResult {
     ),
     duplicates,
     invalid,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate-PRESERVING mode — the broadcast wizard's CSV audience.
+//
+// `parseBroadcastCsv` above collapses repeats (right for the Contacts
+// importer, which must never create two contacts for one number). The
+// broadcast wizard needs the opposite contract: every valid row is its
+// own message, so a number appearing three times gets three recipient
+// rows — while still creating at most ONE contact per number. Both
+// truths are expressible: rows keep their own values, contacts dedupe
+// on the normalized number. This function owns the row side; the
+// contact side lives in use-broadcast-sending's keep-duplicates upsert.
+// ---------------------------------------------------------------------------
+
+/** One CSV row → one future recipient, values and line number intact. */
+export interface BroadcastCsvRow {
+  phone: string;
+  /** Normalized digits-only key — matches contacts.phone_normalized. */
+  key: string;
+  /** 1-based physical CSV line, surfaced to the user everywhere. */
+  sourceRow: number;
+  name?: string;
+  email?: string;
+  company?: string;
+}
+
+export interface BroadcastCsvSkip {
+  phone: string;
+  name?: string;
+  sourceRow: number;
+  reason: 'invalid_phone';
+}
+
+export interface BroadcastCsvReview {
+  /** Parsed data rows in the file (empty lines excluded), valid or not. */
+  totalRows: number;
+  /** Rows with a usable international number — i.e. rows kept. */
+  validRows: number;
+  /** Distinct normalized numbers among the valid rows. */
+  uniqueNumbers: number;
+  /** Valid rows beyond a number's first occurrence. */
+  repeatedRows: number;
+  skipped: BroadcastCsvSkip[];
+}
+
+export type ParseBroadcastCsvRowsResult =
+  | {
+      ok: true;
+      rows: BroadcastCsvRow[];
+      review: BroadcastCsvReview;
+    }
+  | { ok: false; error: BroadcastCsvError };
+
+export function parseBroadcastCsvRows(
+  text: string,
+): ParseBroadcastCsvRowsResult {
+  // withRowNumbers keeps the contacts-importer contract untouched while
+  // giving this mode the physical line of every record.
+  const { rows, hasPhoneColumn } = parseContactCsv(text, true);
+
+  if (!hasPhoneColumn) return { ok: false, error: 'missing_phone_column' };
+
+  const kept: BroadcastCsvRow[] = [];
+  const skipped: BroadcastCsvSkip[] = [];
+  const seen = new Set<string>();
+  let repeatedRows = 0;
+
+  for (const row of rows as ParsedContactRow[]) {
+    const key = parseInternationalPhone(row.phone);
+    const sourceRow = row.sourceRow ?? kept.length + 2; // header + 1 fallback
+    if (!key) {
+      // Blank or national-format number (issue #586): never sent, always
+      // listed, so a `+`-stripped spreadsheet is visible before sending.
+      skipped.push({ phone: row.phone, name: row.name, sourceRow, reason: 'invalid_phone' });
+      continue;
+    }
+    if (seen.has(key)) repeatedRows++;
+    seen.add(key);
+    kept.push({
+      phone: row.phone,
+      key,
+      sourceRow,
+      name: row.name,
+      email: row.email,
+      company: row.company,
+    });
+  }
+
+  if (kept.length === 0) return { ok: false, error: 'no_valid_rows' };
+
+  return {
+    ok: true,
+    rows: kept,
+    review: {
+      totalRows: rows.length,
+      validRows: kept.length,
+      uniqueNumbers: seen.size,
+      repeatedRows,
+      skipped,
+    },
   };
 }

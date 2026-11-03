@@ -4,8 +4,13 @@ import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { addContactTag, deleteContactTag } from '@/lib/contacts/tag-api';
+import {
+  getGroupIdsForContact,
+  listAllGroups,
+  syncContactGroups,
+} from '@/lib/contacts/group-api';
 import { toast } from 'sonner';
-import type { Contact, Tag, ContactTag } from '@/types';
+import type { Contact, Tag, ContactTag, ContactGroup } from '@/types';
 import {
   findExistingContact,
   isExactMatch,
@@ -24,8 +29,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
-import { Loader2, AlertTriangle } from 'lucide-react';
+import { Loader2, AlertTriangle, FolderClosed } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 interface ContactFormProps {
@@ -71,6 +75,12 @@ export function ContactForm({
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [loadingTags, setLoadingTags] = useState(false);
 
+  // Group memberships — the same chip multi-select shape as tags, on
+  // top of contact_groups (migration 056).
+  const [groups, setGroups] = useState<ContactGroup[]>([]);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [loadingGroups, setLoadingGroups] = useState(false);
+
   useEffect(() => {
     if (open) {
       setName(contact?.name ?? '');
@@ -80,7 +90,17 @@ export function ContactForm({
       setSelectedTagIds(contactTags.map((ct) => ct.tag_id));
       setDupMatch(null);
       fetchTags();
+      fetchGroups();
+      // Pre-select current memberships when editing.
+      if (contact) {
+        getGroupIdsForContact(supabase, contact.id)
+          .then(setSelectedGroupIds)
+          .catch(() => setSelectedGroupIds([]));
+      } else {
+        setSelectedGroupIds([]);
+      }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, contact]);
 
   // Look up an existing contact with this number (new contacts only).
@@ -113,6 +133,25 @@ export function ContactForm({
       .order('name');
     if (data) setTags(data);
     setLoadingTags(false);
+  }
+
+  async function fetchGroups() {
+    setLoadingGroups(true);
+    try {
+      setGroups(await listAllGroups(supabase));
+    } catch {
+      setGroups([]);
+    } finally {
+      setLoadingGroups(false);
+    }
+  }
+
+  function toggleGroup(groupId: string) {
+    setSelectedGroupIds((prev) =>
+      prev.includes(groupId)
+        ? prev.filter((id) => id !== groupId)
+        : [...prev, groupId]
+    );
   }
 
   function toggleTag(tagId: string) {
@@ -204,6 +243,12 @@ export function ContactForm({
         for (const tagId of toAdd) {
           await addContactTag(contactId, tagId);
         }
+      }
+
+      // Sync group memberships. Re-adding an existing member is a
+      // harmless no-op; a wrong-account group id is refused by RLS.
+      if (contactId) {
+        await syncContactGroups(supabase, contactId, selectedGroupIds);
       }
 
       toast.success(isEdit ? t('toastSuccessEdit') : t('toastSuccessAdd'));
@@ -368,6 +413,41 @@ export function ContactForm({
                       }}
                     >
                       {tag.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-muted-foreground">{t('groupsLabel')}</Label>
+            {loadingGroups ? (
+              <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                <Loader2 className="size-3 animate-spin" />
+                {t('loadingGroups')}
+              </div>
+            ) : groups.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {t('noGroupsAvailable')}
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {groups.map((group) => {
+                  const selected = selectedGroupIds.includes(group.id);
+                  return (
+                    <button
+                      key={group.id}
+                      type="button"
+                      onClick={() => toggleGroup(group.id)}
+                      className={`inline-flex items-center gap-1 rounded-full border border-primary/30 px-2.5 py-0.5 text-xs font-medium transition-colors cursor-pointer ${
+                        selected
+                          ? 'bg-primary/15 text-primary ring-2 ring-primary ring-offset-1 ring-offset-popover'
+                          : 'bg-muted text-muted-foreground opacity-70 hover:opacity-100'
+                      }`}
+                    >
+                      <FolderClosed className="size-3" />
+                      {group.name}
                     </button>
                   );
                 })}

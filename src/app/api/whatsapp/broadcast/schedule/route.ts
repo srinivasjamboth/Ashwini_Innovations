@@ -32,6 +32,16 @@ import {
 interface ScheduledRecipient {
   contact_id: string;
   template_params?: string[];
+  /**
+   * Frozen per-recipient carousel card values (migration 059), built
+   * client-side exactly like `template_params`. Only ever present for a
+   * carousel campaign, so non-carousel inserts touch no new column.
+   */
+  carousel_params?: Record<string, unknown>;
+  /** Audience provenance (migration 057): 'csv' rows carry a source_row
+   *  line number so results can show which file line produced them. */
+  source?: 'contact' | 'csv';
+  source_row?: number;
 }
 
 interface SchedulePayload {
@@ -182,6 +192,15 @@ export async function POST(request: Request) {
         contact_id: r.contact_id,
         status: 'pending' as const,
         template_params: Array.isArray(r.template_params) ? r.template_params : [],
+        // Pass the frozen carousel card values through when the client
+        // planned any (carousel campaigns only, migration 059).
+        ...(r.carousel_params && typeof r.carousel_params === 'object'
+          ? { carousel_params: r.carousel_params }
+          : {}),
+        // Pass provenance through when the client froze it (row-mode
+        // CSV); otherwise the column defaults to 'contact' in the DB.
+        ...(r.source === 'csv' || r.source === 'contact' ? { source: r.source } : {}),
+        ...(typeof r.source_row === 'number' ? { source_row: r.source_row } : {}),
       }));
       const { error: recipientError } = await supabase
         .from('broadcast_recipients')

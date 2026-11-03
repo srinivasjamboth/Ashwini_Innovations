@@ -13,8 +13,10 @@ import {
   validateTemplatePayload,
   type TemplatePayload,
 } from '@/lib/whatsapp/template-validators'
+import { validateCarouselSubmission } from '@/lib/whatsapp/carousel'
 import { buildMetaTemplatePayload } from '@/lib/whatsapp/template-components'
 import { ensureMediaHeaderHandle } from '@/lib/whatsapp/template-header-handle'
+import { ensureCarouselCardHandles } from '@/lib/whatsapp/carousel-card-handle'
 import { normalizeStatus } from '@/lib/whatsapp/template-status-normalize'
 
 /**
@@ -52,6 +54,9 @@ function buildUpsertRow(
     footer_text: payload.footer_text ?? null,
     buttons: payload.buttons ?? null,
     sample_values: payload.sample_values ?? null,
+    // The DB CHECK refuses a carousel document on any other header type,
+    // so this is deliberately gated rather than passed through.
+    carousel: payload.header_type === 'carousel' ? (payload.carousel ?? null) : null,
     status: extras.status,
     meta_template_id: extras.metaTemplateId,
     submission_error: extras.submissionError,
@@ -121,6 +126,7 @@ export async function POST(request: Request) {
 
     try {
       validateTemplatePayload(payload)
+      validateCarouselSubmission(payload)
     } catch (e) {
       return NextResponse.json(
         { error: e instanceof Error ? e.message : 'Validation failed.' },
@@ -190,6 +196,9 @@ export async function POST(request: Request) {
       // wrong type/size).
       try {
         await ensureMediaHeaderHandle(payload, accessToken)
+        // A carousel has one such sample per card; both helpers are a
+        // no-op for the other's header type.
+        await ensureCarouselCardHandles(payload, accessToken)
       } catch (e) {
         return NextResponse.json(
           { error: e instanceof Error ? e.message : 'Header media upload failed.' },

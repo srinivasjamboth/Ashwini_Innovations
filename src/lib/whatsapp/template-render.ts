@@ -31,11 +31,18 @@ import type {
   MessageTemplate,
   TemplateMessagePayload,
   TemplatePayloadButton,
+  TemplatePayloadCard,
   TemplatePayloadHeader,
   TemplateHeaderKind,
 } from '@/types';
 
 import { renderTemplateBody } from './template-body';
+import {
+  buildCarouselSnapshotCards,
+  carouselOf,
+  type CarouselSendValues,
+  parseCarouselSendValues,
+} from './carousel';
 
 /** Header kinds we know how to render. Anything else → no header. */
 const HEADER_KINDS = ['text', 'image', 'video', 'document'] as const;
@@ -72,6 +79,12 @@ export interface BuildTemplatePayloadArgs {
   headerMediaId?: string | null;
   /** Per-button send-time values, keyed by button index. */
   buttonParams?: Record<number, string> | null;
+  /**
+   * Carousel sends only: the per-recipient card values exactly as the
+   * wire builder received them, so the snapshot shows this recipient's
+   * card text and URL values, not the template's samples.
+   */
+  carouselValues?: CarouselSendValues | null;
   /**
    * Body the caller already rendered. The composer and the broadcast
    * fan-out both substitute client-side/planner-side; passing it keeps
@@ -184,6 +197,11 @@ function composeTemplatePayload(
     str(args.renderedBody) ??
     (template ? renderTemplateBody(template.body_text ?? '', args.bodyParams ?? []) : '');
 
+  // Carousel rows only: `carouselOf` returns null for every other header
+  // type and never throws on odd JSON, so a non-carousel snapshot keeps
+  // the exact shape (and key set) it had before this feature.
+  const carouselData = template ? carouselOf(template) : null;
+
   return {
     name: args.name,
     language: str(args.language) ?? str(template?.language) ?? 'en_US',
@@ -192,6 +210,9 @@ function composeTemplatePayload(
     body,
     footer: str(template?.footer_text),
     buttons: template ? buildButtons(template, args) : [],
+    cards: carouselData
+      ? buildCarouselSnapshotCards(carouselData, args.carouselValues ?? undefined)
+      : undefined,
   };
 }
 
@@ -265,6 +286,15 @@ function coerceButtonParams(value: unknown): Record<number, string> | null {
 }
 
 /**
+ * Carousel send values out of an untrusted `messageParams.carousel`.
+ * Delegates to the shared defensive parser in `carousel.ts` so the
+ * snapshot path and the Resume path read the frozen JSONB identically.
+ */
+function coerceCarouselValues(value: unknown): CarouselSendValues | null {
+  return parseCarouselSendValues(value);
+}
+
+/**
  * The snapshot to persist for a send that is about to be (or has just
  * been) handed to Meta. One function shared by every write site so a
  * dashboard send, a broadcast fan-out and an automation send cannot
@@ -294,6 +324,7 @@ export function buildSendTemplateSnapshot(
           headerMediaUrl?: unknown;
           headerMediaId?: unknown;
           buttonParams?: unknown;
+          carousel?: unknown;
         })
       : {};
 
@@ -312,6 +343,7 @@ export function buildSendTemplateSnapshot(
     headerMediaUrl: str(p.headerMediaUrl),
     headerMediaId: str(p.headerMediaId),
     buttonParams: coerceButtonParams(p.buttonParams),
+    carouselValues: coerceCarouselValues(p.carousel),
     renderedBody: str(args.storedBody),
   });
 }
@@ -363,6 +395,7 @@ export function parseTemplatePayload(value: unknown): TemplateMessagePayload | n
 
   const header = parseHeader(v.header);
   const buttons = parseButtons(v.buttons);
+  const cards = parseCards(v.cards);
 
   return {
     name: v.name,
@@ -372,6 +405,9 @@ export function parseTemplatePayload(value: unknown): TemplateMessagePayload | n
     body: v.body,
     footer: str(v.footer),
     buttons,
+    // Only carousels carry cards; every other payload keeps the exact
+    // shape it had before (no `cards` key written back).
+    ...(cards ? { cards } : {}),
   };
 }
 
@@ -408,6 +444,25 @@ function parseButtons(value: unknown): TemplatePayloadButton[] {
       url: str(v.url),
       phoneNumber: str(v.phoneNumber),
       code: str(v.code),
+    });
+  }
+  return out;
+}
+
+function parseCards(value: unknown): TemplatePayloadCard[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const out: TemplatePayloadCard[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return null;
+    const v = item as Record<string, unknown>;
+    const kind = typeof v.kind === 'string' ? v.kind.toLowerCase() : '';
+    if (kind !== 'image' && kind !== 'video') return null;
+    out.push({
+      index: typeof v.index === 'number' ? v.index : out.length,
+      kind,
+      mediaUrl: str(v.mediaUrl),
+      text: typeof v.text === 'string' ? v.text : null,
+      buttons: parseButtons(v.buttons),
     });
   }
   return out;

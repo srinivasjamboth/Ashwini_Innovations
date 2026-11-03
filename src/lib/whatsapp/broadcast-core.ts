@@ -28,6 +28,10 @@ import {
 } from '@/lib/whatsapp/phone-utils';
 import { resolveTemplateRow, templateContentText } from '@/lib/whatsapp/template-body';
 import { buildSendTemplateSnapshot } from '@/lib/whatsapp/template-render';
+import {
+  ensureCarouselCampaignMedia,
+  isCarouselMediaRejection,
+} from '@/lib/whatsapp/carousel-send-media';
 import { mirrorBroadcastToChat } from '@/lib/whatsapp/broadcast-chat';
 import type { MessageTemplate } from '@/types';
 import { findOrCreateContact } from '@/lib/api/v1/contacts';
@@ -302,11 +306,49 @@ export async function deliverBroadcast(
 ): Promise<void> {
   const delayMs = Math.max(0, plan.sendDelayMs ?? 0);
   const lastIndex = plan.planned.length - 1;
+
+  // Carousel sends need one uploaded Meta media id PER CARD, shared by
+  // every recipient — resolve them once for this pass, never per
+  // recipient. A resolution failure is not fatal here: with no ids the
+  // send builder throws per-card below, and a link-only plan still
+  // sends, so we log and let the fan-out proceed.
+  let campaignMedia: Awaited<ReturnType<typeof ensureCarouselCampaignMedia>> =
+    null;
+  try {
+    campaignMedia = await ensureCarouselCampaignMedia(db, {
+      accountId: plan.accountId,
+      phoneNumberId: plan.phoneNumberId,
+      accessToken: plan.accessToken,
+      template: plan.templateRow,
+    });
+  } catch (error) {
+    console.warn('[broadcast-core] carousel media resolution failed:', error);
+  }
+  // Fold the campaign media into each recipient's own card values
+  // (text/URL params stay per-recipient on `messageParams.carousel`).
+  // Stamped on EVERY recipient of a carousel plan — the send builder
+  // needs a media reference per card even when no card carries
+  // variables, and `campaignMedia` is null for every other template.
+  if (campaignMedia) {
+    for (const recipient of plan.planned) {
+      recipient.messageParams = {
+        ...recipient.messageParams,
+        carousel: {
+          ...(recipient.messageParams?.carousel ?? { cards: [] }),
+          media: campaignMedia,
+        },
+      };
+    }
+  }
+
   for (let idx = 0; idx < plan.planned.length; idx++) {
     const recipient = plan.planned[idx];
     const variants = phoneVariants(recipient.phone);
     let sentMessageId: string | null = null;
     let lastError: string | null = null;
+    // One forced cache-refresh retry when Meta rejects a cached media
+    // id (expired/pruned) — re-upload every card and rebuild the plan.
+    let mediaRefreshed = !campaignMedia;
 
     for (const variant of variants) {
       try {
@@ -326,6 +368,46 @@ export async function deliverBroadcast(
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         lastError = message;
+        if (campaignMedia && !mediaRefreshed && isCarouselMediaRejection(message)) {
+          mediaRefreshed = true;
+          try {
+            const fresh = await ensureCarouselCampaignMedia(db, {
+              accountId: plan.accountId,
+              phoneNumberId: plan.phoneNumberId,
+              accessToken: plan.accessToken,
+              template: plan.templateRow,
+              forceRefresh: true,
+            });
+            if (fresh) {
+              recipient.messageParams = {
+                ...recipient.messageParams,
+                carousel: {
+                  ...(recipient.messageParams?.carousel ?? { cards: [] }),
+                  media: fresh,
+                },
+              };
+              // Same variant again — the only change is refreshed ids.
+              const retry = await sendTemplateMessage({
+                phoneNumberId: plan.phoneNumberId,
+                accessToken: plan.accessToken,
+                to: variant,
+                templateName: plan.templateName,
+                language: plan.templateLanguage,
+                template: plan.templateRow ?? undefined,
+                messageParams: recipient.messageParams,
+                params: recipient.params,
+              });
+              sentMessageId = retry.messageId;
+              lastError = null;
+              break;
+            }
+          } catch (refreshError) {
+            lastError =
+              refreshError instanceof Error
+                ? refreshError.message
+                : 'Unknown error';
+          }
+        }
         // Only a "recipient not allowed" error is worth another variant.
         if (!isRecipientNotAllowedError(message)) break;
       }

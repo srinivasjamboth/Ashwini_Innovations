@@ -1,8 +1,10 @@
 'use client';
 
-import { ChevronLeft, Video, Phone, MoreVertical, CheckCheck, CornerDownLeft, ExternalLink, ClipboardCopy, Workflow } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronLeft, Video, Phone, MoreVertical, CheckCheck, CornerDownLeft, ExternalLink, ClipboardCopy, Workflow, Play } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import type { TemplateButton } from '@/types';
+import type { CarouselTemplateData, TemplateButton } from '@/types';
+import { carouselCardPreviewText } from '@/lib/whatsapp/carousel';
 import { cn } from '@/lib/utils';
 
 /**
@@ -19,7 +21,7 @@ import { cn } from '@/lib/utils';
  * change all three occurrences together if the shade needs adjusting.
  */
 interface TemplatePreviewProps {
-  headerFormat: 'none' | 'text' | 'image' | 'video' | 'document';
+  headerFormat: 'none' | 'text' | 'image' | 'video' | 'document' | 'carousel';
   headerContent: string;
   headerMediaUrl: string;
   bodyText: string;
@@ -59,6 +61,18 @@ interface TemplatePreviewProps {
    * read-only selection preview). Omitted = the builder's own copy.
    */
   emptyMessage?: string;
+  /**
+   * Media card carousel. Only read when `headerFormat === 'carousel'`,
+   * so every existing preview (none/text/image/video/document) renders
+   * exactly as before.
+   */
+  carousel?: CarouselTemplateData | null;
+  /**
+   * Card the carousel preview should scroll to — the builder passes the
+   * card being edited so the strip and the phone stay in step. Ignored
+   * by the read-only preview, which leaves the row at its first card.
+   */
+  carouselActiveCard?: number;
 }
 
 // Split on {{n}} tokens, replacing each with its sample value when one has
@@ -94,6 +108,8 @@ export function TemplatePreview({
   frameColor,
   businessInitials,
   emptyMessage,
+  carousel,
+  carouselActiveCard,
 }: TemplatePreviewProps) {
   const t = useTranslations('Settings.templates');
   const now = new Date().toLocaleTimeString(undefined, {
@@ -101,8 +117,15 @@ export function TemplatePreview({
     minute: '2-digit',
   });
 
+  // A carousel has no header, no footer and no top-level buttons at all:
+  // its media lives on the cards. Everything below is gated on this flag,
+  // so the other five header formats render exactly as before.
+  const isCarousel = headerFormat === 'carousel';
+  const carouselCards = isCarousel ? (carousel?.cards ?? []) : [];
+
   const headerIsText = headerFormat === 'text' && Boolean(headerContent.trim());
   const headerIsMedia =
+    !isCarousel &&
     headerFormat !== 'none' &&
     headerFormat !== 'text' &&
     Boolean(headerMediaUrl.trim());
@@ -110,9 +133,16 @@ export function TemplatePreview({
   // template whose asset never carried a URL) — show a labelled
   // placeholder instead of silently dropping the header.
   const headerMediaMissing =
-    headerFormat !== 'none' && headerFormat !== 'text' && !headerMediaUrl.trim();
+    !isCarousel &&
+    headerFormat !== 'none' &&
+    headerFormat !== 'text' &&
+    !headerMediaUrl.trim();
   const hasContent =
-    headerIsText || headerIsMedia || Boolean(bodyText.trim()) || buttons.length > 0;
+    headerIsText ||
+    headerIsMedia ||
+    Boolean(bodyText.trim()) ||
+    carouselCards.length > 0 ||
+    (!isCarousel && buttons.length > 0);
 
   // Two initials when the caller provides them (smaller text keeps them
   // inside the size-8 circle), otherwise the original single letter.
@@ -211,10 +241,13 @@ export function TemplatePreview({
                   {renderVariables(bodyText, bodySamples)}
                 </p>
               )}
-              {footerText.trim() && (
+              {carouselCards.length > 0 && (
+                <CarouselCards data={carousel!} activeCard={carouselActiveCard} />
+              )}
+              {!isCarousel && footerText.trim() && (
                 <p className="mt-1 text-[11px] italic text-neutral-500">{footerText}</p>
               )}
-              {buttons.length > 0 && (
+              {!isCarousel && buttons.length > 0 && (
                 <div className="mt-2 space-y-1 border-t border-neutral-200 pt-1.5">
                   {buttons.map((b, i) => (
                     <p
@@ -244,6 +277,127 @@ export function TemplatePreview({
           <span aria-hidden className="h-1 w-24 rounded-full bg-white/45" />
         </div>
       </div>
+
+      {carouselCards.length > 0 && (
+        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+          {t('carouselCropNote')}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The swipeable card row inside the bubble — wide-cropped media, card
+ * text with its sample values substituted, then the card's buttons, in
+ * the order the template defines them. Horizontally scrollable with snap,
+ * so a 10-card carousel behaves like it does on the phone.
+ */
+function CarouselCards({
+  data,
+  activeCard,
+}: {
+  data: CarouselTemplateData;
+  activeCard?: number;
+}) {
+  const t = useTranslations('Settings.templates');
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [active, setActive] = useState(0);
+
+  // Follow the card the author is editing. No-op for the read-only
+  // preview, which never passes an index.
+  useEffect(() => {
+    if (activeCard === undefined) return;
+    const scroller = scrollRef.current;
+    const target = scroller?.children[activeCard] as HTMLElement | undefined;
+    if (!scroller || !target) return;
+    scroller.scrollTo({
+      left: target.offsetLeft - scroller.offsetLeft,
+      behavior: 'smooth',
+    });
+  }, [activeCard, data.cards.length]);
+
+  return (
+    <div className="mt-2">
+      <div
+        ref={scrollRef}
+        onScroll={() => {
+          const el = scrollRef.current;
+          if (!el || el.clientWidth === 0) return;
+          const next = Math.min(
+            data.cards.length - 1,
+            Math.round(el.scrollLeft / el.clientWidth),
+          );
+          setActive((prev) => (prev === next ? prev : next));
+        }}
+        className="[-ms-overflow-style:none] [scrollbar-width:none] flex snap-x snap-mandatory gap-2 overflow-x-auto pb-1"
+      >
+        {data.cards.map((card, i) => (
+          <div
+            key={i}
+            className="w-[82%] shrink-0 snap-start overflow-hidden rounded-lg border border-neutral-200 bg-white"
+          >
+            <div className="relative aspect-[2/1] bg-neutral-100">
+              {card.media_url ? (
+                data.media_format === 'image' ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={card.media_url}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <>
+                    <video
+                      src={card.media_url}
+                      preload="metadata"
+                      className="h-full w-full object-cover"
+                    />
+                    <span className="absolute inset-0 flex items-center justify-center">
+                      <Play className="size-6 fill-white/80 text-white/90 drop-shadow" />
+                    </span>
+                  </>
+                )
+              ) : (
+                <span className="absolute inset-0 flex items-center justify-center text-[11px] font-medium uppercase tracking-wide text-neutral-500">
+                  {data.media_format}
+                </span>
+              )}
+            </div>
+            {data.cards_have_text && (
+              <p className="px-2 pt-1.5 text-[12px] leading-snug break-words">
+                {renderVariables(carouselCardPreviewText(card), card.text_examples ?? [])}
+              </p>
+            )}
+            <div className="mt-1.5 border-t border-neutral-200 py-1">
+              {card.buttons.map((button, b) => (
+                <p
+                  key={b}
+                  className="flex items-center justify-center gap-1 py-0.5 text-center text-[11px] font-medium text-[#075E54]"
+                >
+                  {button.type === 'QUICK_REPLY' && <CornerDownLeft className="size-3 shrink-0 opacity-80" />}
+                  {button.type === 'URL' && <ExternalLink className="size-3 shrink-0 opacity-80" />}
+                  {button.type === 'PHONE_NUMBER' && <Phone className="size-3 shrink-0 opacity-80" />}
+                  {button.text.trim() || '—'}
+                </p>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* Page dots — WhatsApp's own cue that the row scrolls. */}
+      <div className="mt-1 flex justify-center gap-1" aria-hidden>
+        {data.cards.map((_, i) => (
+          <span
+            key={i}
+            className={cn(
+              'h-1 rounded-full transition-all',
+              i === active ? 'w-2.5 bg-neutral-500' : 'w-1 bg-neutral-300',
+            )}
+          />
+        ))}
+      </div>
+      <p className="sr-only">{t('carouselScrollHint', { count: data.cards.length })}</p>
     </div>
   );
 }

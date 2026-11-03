@@ -151,9 +151,15 @@ export async function runScheduledBroadcasts(
         // Reproduce the browser pass's media-header override, if any.
         // Additive: rows without one (or text-header templates) leave
         // messageParams undefined and send exactly as the resume path does.
+        // Merged rather than assigned so the resume's own per-recipient
+        // values (carousel card params) survive the override.
         if (row.header_media_url) {
-          const mp = { headerMediaUrl: row.header_media_url };
-          for (const planned of res.plan.planned) planned.messageParams = mp;
+          for (const planned of res.plan.planned) {
+            planned.messageParams = {
+              ...planned.messageParams,
+              headerMediaUrl: row.header_media_url,
+            };
+          }
         }
         await deliverBroadcast(admin, res.plan);
         // 0 means this pass covered every remaining sendable recipient.

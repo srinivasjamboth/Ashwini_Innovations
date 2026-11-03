@@ -70,10 +70,14 @@ export async function collectPublishIssues(opts: {
       ),
     )
     const approved = new Set<string>()
+    // Carousels are Broadcasts-only in this version — a Template node
+    // pointing at one must fail validation instead of silently failing
+    // at send time.
+    const carousels = new Set<string>()
     if (names.length > 0) {
       const { data, error } = await admin
         .from('message_templates')
-        .select('name, language')
+        .select('name, language, header_type')
         .eq('account_id', accountId)
         .eq('status', 'APPROVED')
         .in('name', names)
@@ -82,6 +86,10 @@ export async function collectPublishIssues(opts: {
         const lang = (row.language as string | undefined) ?? 'en_US'
         approved.add(`${row.name as string}::${lang}`)
         approved.add(row.name as string) // name-only fallback for blank lang
+        if (row.header_type === 'carousel') {
+          carousels.add(`${row.name as string}::${lang}`)
+          carousels.add(row.name as string)
+        }
       }
     }
     for (const n of templateNodes) {
@@ -93,6 +101,12 @@ export async function collectPublishIssues(opts: {
         issues.push({
           path: `nodes.${n.id}.template_name`,
           message: `Template "${name}" (${lang}) is no longer approved and can't be sent`,
+          severity: 'error',
+        })
+      } else if (carousels.has(`${name}::${lang}`) || carousels.has(name)) {
+        issues.push({
+          path: `nodes.${n.id}.template_name`,
+          message: `Template "${name}" (${lang}) is a carousel — carousel templates can be sent from Broadcasts only`,
           severity: 'error',
         })
       }

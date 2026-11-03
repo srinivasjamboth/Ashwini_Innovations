@@ -21,6 +21,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { BroadcastError, type BroadcastPlan } from '@/lib/whatsapp/broadcast-core';
 import { decrypt } from '@/lib/whatsapp/encryption';
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
+import { isMissingColumnError } from '@/lib/whatsapp/template-render';
+import { parseCarouselSendValues } from '@/lib/whatsapp/carousel';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
 
 /** Which recipients a resume pass picks up. */
@@ -143,6 +145,12 @@ export interface ResumePlan {
 interface RecipientRow {
   id: string;
   template_params: unknown;
+  /**
+   * Frozen per-recipient carousel card values (migration 059). Absent
+   * on rows written before the migration and on a database where it has
+   * not been applied yet — the loader below degrades to omitting it.
+   */
+  carousel_params?: unknown;
   contact: { id?: string; phone?: string | null } | { id?: string; phone?: string | null }[] | null;
 }
 
@@ -187,21 +195,40 @@ export async function planBroadcastResume(
   }
 
   const statuses = scopeStatuses(scope);
-  const { data: rawRows, error: recError } = await db
+  const recipientSelect = db
     .from('broadcast_recipients')
-    .select('id, template_params, contact:contacts(id, phone)')
+    .select('id, template_params, carousel_params, contact:contacts(id, phone)')
     .eq('broadcast_id', broadcastId)
     .in('status', statuses)
     // Oldest first, so repeated capped passes chew through the backlog
     // in a stable order instead of re-picking the same slice.
     .order('created_at', { ascending: true });
+  const { data: rawRows, error: recError } = await recipientSelect;
 
+  let rows: RecipientRow[];
   if (recError) {
-    console.error('[broadcast-resume] recipient load failed:', recError.message);
-    throw new BroadcastError('internal', 'Failed to load recipients', 500);
+    // `carousel_params` ships with migration 059 — resume correctly on
+    // a database where the SQL has not been applied yet by re-reading
+    // without it (carousels then send with their frozen body params and
+    // no per-recipient card values, i.e. exactly pre-migration output).
+    if (!isMissingColumnError(recError, 'carousel_params')) {
+      console.error('[broadcast-resume] recipient load failed:', recError.message);
+      throw new BroadcastError('internal', 'Failed to load recipients', 500);
+    }
+    const { data: fallbackRows, error: fallbackError } = await db
+      .from('broadcast_recipients')
+      .select('id, template_params, contact:contacts(id, phone)')
+      .eq('broadcast_id', broadcastId)
+      .in('status', statuses)
+      .order('created_at', { ascending: true });
+    if (fallbackError) {
+      console.error('[broadcast-resume] recipient load failed:', fallbackError.message);
+      throw new BroadcastError('internal', 'Failed to load recipients', 500);
+    }
+    rows = (fallbackRows ?? []) as RecipientRow[];
+  } else {
+    rows = (rawRows ?? []) as RecipientRow[];
   }
-
-  const rows = (rawRows ?? []) as RecipientRow[];
 
   // A recipient whose contact has no usable phone can never send. Stamp
   // it failed now: leaving it 'pending' would keep the broadcast in
@@ -276,6 +303,11 @@ export async function planBroadcastResume(
   const headerOverride = (broadcast as { header_media_url?: string | null })
     .header_media_url ?? null;
 
+  // Carousel campaigns freeze each recipient's card text/URL values on
+  // `carousel_params` (migration 059). `deliverBroadcast` stamps the
+  // campaign-level card media onto these below.
+  const isCarouselTemplate = resolvedTemplate.row?.header_type === 'carousel';
+
   const plan: BroadcastPlan = {
     broadcastId,
     accountId,
@@ -288,17 +320,29 @@ export async function planBroadcastResume(
     accessToken: decrypt(config.access_token),
     templateRow: resolvedTemplate.row,
     sendDelayMs,
-    planned: slice.map((row) => ({
-      recipientRowId: row.id,
-      contactId: contactRow(row)?.id,
-      phone: sanitizePhoneForMeta(contactPhone(row) ?? ''),
-      params: Array.isArray(row.template_params)
-        ? row.template_params.filter((p): p is string => typeof p === 'string')
-        : [],
-      ...(headerOverride
-        ? { messageParams: { headerMediaUrl: headerOverride } }
-        : {}),
-    })),
+    planned: slice.map((row) => {
+      const carouselValues = isCarouselTemplate
+        ? parseCarouselSendValues(row.carousel_params)
+        : null;
+      // Merge with the media-header override: a row keeps whichever
+      // send-time params apply, and neither is invented when absent.
+      const messageParams =
+        headerOverride || carouselValues
+          ? {
+              ...(headerOverride ? { headerMediaUrl: headerOverride } : {}),
+              ...(carouselValues ? { carousel: carouselValues } : {}),
+            }
+          : undefined;
+      return {
+        recipientRowId: row.id,
+        contactId: contactRow(row)?.id,
+        phone: sanitizePhoneForMeta(contactPhone(row) ?? ''),
+        params: Array.isArray(row.template_params)
+          ? row.template_params.filter((p): p is string => typeof p === 'string')
+          : [],
+        ...(messageParams ? { messageParams } : {}),
+      };
+    }),
     rejected: 0,
   };
 

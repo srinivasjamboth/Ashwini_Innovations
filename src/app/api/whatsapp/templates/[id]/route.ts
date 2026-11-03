@@ -6,16 +6,20 @@ import {
   toErrorResponse,
 } from '@/lib/auth/account'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { isNumericMetaId } from '@/lib/whatsapp/waba-pairing'
 import {
   deleteMessageTemplate,
   editMessageTemplate,
+  isTemplateGoneOnMeta,
 } from '@/lib/whatsapp/meta-api'
 import {
   validateTemplatePayload,
   type TemplatePayload,
 } from '@/lib/whatsapp/template-validators'
+import { validateCarouselSubmission } from '@/lib/whatsapp/carousel'
 import { buildMetaTemplatePayload } from '@/lib/whatsapp/template-components'
 import { ensureMediaHeaderHandle } from '@/lib/whatsapp/template-header-handle'
+import { ensureCarouselCardHandles } from '@/lib/whatsapp/carousel-card-handle'
 
 /**
  * Per-template lifecycle endpoint.
@@ -25,9 +29,12 @@ import { ensureMediaHeaderHandle } from '@/lib/whatsapp/template-header-handle'
  *          action on REJECTED / PAUSED rows. Meta replaces components
  *          wholesale on edit and bumps status back to PENDING.
  *
- * DELETE — remove the template on Meta (when meta_template_id is set,
- *          scoped to a single language variant via hsm_id) AND drop
- *          the local row. Local-only rows skip the Meta call.
+ * DELETE — drop the local row, always, and remove the template on Meta
+ *          first when it is still there (scoped to a single language
+ *          variant via hsm_id). A Meta refusal no longer blocks the
+ *          local delete: it is reported back as `meta_warning` so the UI
+ *          can say the row is gone from the CRM but may still exist in
+ *          WhatsApp Manager until the next Sync reconciles it.
  *
  * Initial submission (DRAFT → PENDING) lives at the sibling
  * /submit endpoint — keep this route narrowly about lifecycle of
@@ -121,6 +128,7 @@ export async function PATCH(
 
     try {
       validateTemplatePayload(payload)
+      validateCarouselSubmission(payload)
     } catch (e) {
       return NextResponse.json(
         { error: e instanceof Error ? e.message : 'Validation failed.' },
@@ -147,6 +155,8 @@ export async function PATCH(
       // from header_media_url.
       try {
         await ensureMediaHeaderHandle(payload, accessToken)
+        // Same rule per card on a carousel template.
+        await ensureCarouselCardHandles(payload, accessToken)
       } catch (e) {
         return NextResponse.json(
           { error: e instanceof Error ? e.message : 'Header media upload failed.' },
@@ -188,6 +198,7 @@ export async function PATCH(
         footer_text: payload.footer_text ?? null,
         buttons: payload.buttons ?? null,
         sample_values: payload.sample_values ?? null,
+        carousel: payload.header_type === 'carousel' ? (payload.carousel ?? null) : null,
         status: 'PENDING',
         submission_error: null,
         rejection_reason: null,
@@ -253,29 +264,55 @@ export async function DELETE(
       return NextResponse.json({ error: 'Template not found.' }, { status: 404 })
     }
 
-    if (existing.meta_template_id && !isDryRun()) {
+    // Meta requires a numeric `hsm_id`. A row submitted while
+    // WHATSAPP_TEMPLATES_DRY_RUN was on carries a synthetic
+    // `dry-run-<uuid>` instead, which can never resolve on Meta — and
+    // since DRY_RUN is an env flag that can be turned off later, sending
+    // it would strand the row permanently. Treat those as local-only rows.
+    const deletableOnMeta =
+      !!existing.meta_template_id && isNumericMetaId(existing.meta_template_id)
+
+    /**
+     * Set when the Meta side could not be cleaned up and the template is
+     * still live there. The local row is removed either way — a template
+     * the user cannot delete is a dead end — and the caller tells the user
+     * why, so "Sync from Meta" bringing it back is explained, not
+     * mysterious.
+     */
+    let metaWarning: string | null = null
+
+    if (deletableOnMeta && !isDryRun()) {
       const { data: config, error: configError } = await supabase
         .from('whatsapp_config')
         .select('*')
         .eq('account_id', accountId)
         .single()
       if (configError || !config || !config.waba_id) {
-        return NextResponse.json(
-          { error: 'WhatsApp not configured — cannot delete on Meta.' },
-          { status: 400 },
-        )
-      }
-      const accessToken = decrypt(config.access_token)
-      try {
-        await deleteMessageTemplate({
-          wabaId: config.waba_id,
-          accessToken,
-          name: existing.name,
-          metaTemplateId: existing.meta_template_id,
-        })
-      } catch (e) {
-        const message = e instanceof Error ? e.message : 'Meta delete failed.'
-        return NextResponse.json({ error: message }, { status: 502 })
+        // Nothing to delete remotely, and no way to check. Warn rather
+        // than block: the local row still goes.
+        metaWarning = 'WhatsApp not configured — the template was not checked on Meta.'
+      } else {
+        const accessToken = decrypt(config.access_token)
+        try {
+          await deleteMessageTemplate({
+            wabaId: config.waba_id,
+            accessToken,
+            name: existing.name,
+            metaTemplateId: existing.meta_template_id,
+          })
+        } catch (e) {
+          // Meta answers a template it has already dropped with
+          // "(#100) Invalid parameter", identical to a genuinely malformed
+          // request, so ask Meta directly whether the id still exists
+          // before treating this as a failed cleanup.
+          const gone = await isTemplateGoneOnMeta({
+            metaTemplateId: existing.meta_template_id,
+            accessToken,
+          })
+          if (!gone) {
+            metaWarning = e instanceof Error ? e.message : 'Meta delete failed.'
+          }
+        }
       }
     }
 
@@ -293,7 +330,11 @@ export async function DELETE(
       )
     }
 
-    return NextResponse.json({ success: true, dry_run: isDryRun() })
+    return NextResponse.json({
+      success: true,
+      dry_run: isDryRun(),
+      meta_warning: metaWarning,
+    })
   } catch (error) {
     if (error instanceof UnauthorizedError || error instanceof ForbiddenError) {
       return toErrorResponse(error)

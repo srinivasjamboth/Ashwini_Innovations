@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Contact, CustomField, MessageTemplate } from '@/types';
+import { carouselScopes, parseCarousel } from '@/lib/whatsapp/carousel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -12,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { ArrowLeft, ArrowRight, Eye, ImageIcon, Loader2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Eye, ImageIcon, Images, Loader2 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 type VariableType = 'static' | 'field' | 'custom_field';
@@ -134,6 +135,17 @@ export function Step3Personalize({
     return [...new Set(matches)].sort();
   }, [template.body_text]);
 
+  // Carousel templates map one row per per-recipient card scope (each
+  // card's text variables + each URL button's trailing variable) on top
+  // of the body placeholders. The keys (`card.0.text.1`, …) ride in the
+  // same `variables` record — the send planner splits the two key spaces
+  // — so sources/fallbacks/cleaning behave identically for every scope.
+  const carouselScopesList = useMemo(() => {
+    if (template.header_type !== 'carousel') return [];
+    const data = parseCarousel(template.carousel);
+    return data ? carouselScopes(data) : [];
+  }, [template]);
+
   // Templates with an IMAGE/VIDEO/DOCUMENT header need a media URL at
   // send time — Meta requires the media component on every delivery and
   // rejects the broadcast without it. The field is hidden for text-only
@@ -176,8 +188,14 @@ export function Step3Personalize({
         missing.push(placeholder);
       }
     }
+    for (const scope of carouselScopesList) {
+      const mapping = variables[scope.key];
+      if (!mapping || !mapping.value?.trim()) {
+        missing.push(scope.label);
+      }
+    }
     return missing;
-  }, [placeholders, variables]);
+  }, [placeholders, carouselScopesList, variables]);
 
   function updateVariable(key: string, patch: Partial<VariableMapping>) {
     const current = variables[key] ?? { type: 'static' as VariableType, value: '' };
@@ -185,6 +203,123 @@ export function Step3Personalize({
       ...variables,
       [key]: { ...current, ...patch },
     });
+  }
+
+  /**
+   * Shared mapping-row markup — one instance per body placeholder and,
+   * for carousel templates, one per per-card variable scope. A plain
+   * inline function (not a component) so the rows keep stable DOM
+   * identity across renders. `sample` is the template's own sample
+   * value, shown as the mapping hint.
+   */
+  function mappingRow(key: string, badge: string, sample?: string) {
+    const mapping = variables[key] ?? { type: 'static' as VariableType, value: '' };
+
+    return (
+      <div
+        key={key}
+        className="rounded-xl border border-border bg-card/50 p-4"
+      >
+        <div className="mb-3 flex items-center gap-2">
+          <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono font-medium text-primary">
+            {badge}
+          </span>
+          {sample ? (
+            <span className="truncate text-xs text-muted-foreground">
+              {t('personalize.sampleHint', { sample })}
+            </span>
+          ) : null}
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+              {t('personalize.type')}
+            </label>
+            <Select
+              value={mapping.type}
+              onValueChange={(val) =>
+                updateVariable(key, {
+                  type: val as VariableType,
+                  value: '',
+                })
+              }
+            >
+              <SelectTrigger className="w-full border-border bg-muted text-foreground">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="border-border bg-popover">
+                <SelectItem value="static">{t('personalize.typeStatic')}</SelectItem>
+                <SelectItem value="field">{t('personalize.typeContact')}</SelectItem>
+                <SelectItem value="custom_field">
+                  {t('personalize.typeCustom')}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+              {mapping.type === 'static' ? t('personalize.staticValue') : t('personalize.contactField')}
+            </label>
+            {mapping.type === 'static' ? (
+              <Input
+                value={mapping.value}
+                onChange={(e) =>
+                  updateVariable(key, { value: e.target.value })
+                }
+                placeholder={t('personalize.enterValue')}
+                className="border-border bg-muted text-foreground placeholder:text-muted-foreground"
+              />
+            ) : mapping.type === 'field' ? (
+              <Select
+                value={mapping.value || null}
+                onValueChange={(val) =>
+                  updateVariable(key, { value: val || '' })
+                }
+              >
+                <SelectTrigger className="w-full border-border bg-muted text-foreground">
+                  <SelectValue placeholder={t('personalize.selectContactField')} />
+                </SelectTrigger>
+                <SelectContent className="border-border bg-popover">
+                  {contactFields.map((field) => (
+                    <SelectItem key={field.value} value={field.value}>
+                      {t(`personalize.fieldMap.${field.labelKey}`)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Select
+                value={mapping.value || null}
+                onValueChange={(val) =>
+                  updateVariable(key, { value: val || '' })
+                }
+              >
+                <SelectTrigger className="w-full border-border bg-muted text-foreground">
+                  <SelectValue
+                    placeholder={
+                      loadingFields
+                        ? t('personalize.loadingFields')
+                        : customFields.length === 0
+                          ? t('personalize.noCustomFields')
+                          : t('personalize.selectCustomField')
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent className="border-border bg-popover">
+                  {customFields.map((f) => (
+                    <SelectItem key={f.id} value={f.id}>
+                      {f.field_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   /**
@@ -284,119 +419,36 @@ export function Step3Personalize({
         </div>
       )}
 
-      {placeholders.length === 0 && !mediaHeaderType ? (
+      {placeholders.length === 0 &&
+      carouselScopesList.length === 0 &&
+      !mediaHeaderType ? (
         <div className="rounded-xl border border-border bg-card/50 p-6 text-center">
           <p className="text-sm text-muted-foreground">
             {t('personalize.noPreview')}
           </p>
         </div>
-      ) : placeholders.length === 0 ? null : (
+      ) : placeholders.length > 0 ? (
         <div className="space-y-4">
-          {placeholders.map((placeholder) => {
-            const key = placeholder.replace(/^\{\{|\}\}$/g, '');
-            const mapping = variables[key] ?? { type: 'static', value: '' };
+          {placeholders.map((placeholder) =>
+            mappingRow(placeholder.replace(/^\{\{|\}\}$/g, ''), placeholder),
+          )}
+        </div>
+      ) : null}
 
-            return (
-              <div
-                key={placeholder}
-                className="rounded-xl border border-border bg-card/50 p-4"
-              >
-                <div className="mb-3 flex items-center gap-2">
-                  <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono font-medium text-primary">
-                    {placeholder}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
-                      {t('personalize.type')}
-                    </label>
-                    <Select
-                      value={mapping.type}
-                      onValueChange={(val) =>
-                        updateVariable(key, {
-                          type: val as VariableType,
-                          value: '',
-                        })
-                      }
-                    >
-                      <SelectTrigger className="w-full border-border bg-muted text-foreground">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="border-border bg-popover">
-                        <SelectItem value="static">{t('personalize.typeStatic')}</SelectItem>
-                        <SelectItem value="field">{t('personalize.typeContact')}</SelectItem>
-                        <SelectItem value="custom_field">
-                          {t('personalize.typeCustom')}
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
-                      {mapping.type === 'static' ? t('personalize.staticValue') : t('personalize.contactField')}
-                    </label>
-                    {mapping.type === 'static' ? (
-                      <Input
-                        value={mapping.value}
-                        onChange={(e) =>
-                          updateVariable(key, { value: e.target.value })
-                        }
-                        placeholder={t('personalize.enterValue')}
-                        className="border-border bg-muted text-foreground placeholder:text-muted-foreground"
-                      />
-                    ) : mapping.type === 'field' ? (
-                      <Select
-                        value={mapping.value || null}
-                        onValueChange={(val) =>
-                          updateVariable(key, { value: val || '' })
-                        }
-                      >
-                        <SelectTrigger className="w-full border-border bg-muted text-foreground">
-                          <SelectValue placeholder={t('personalize.selectContactField')} />
-                        </SelectTrigger>
-                        <SelectContent className="border-border bg-popover">
-                          {contactFields.map((field) => (
-                            <SelectItem key={field.value} value={field.value}>
-                              {t(`personalize.fieldMap.${field.labelKey}`)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Select
-                        value={mapping.value || null}
-                        onValueChange={(val) =>
-                          updateVariable(key, { value: val || '' })
-                        }
-                      >
-                        <SelectTrigger className="w-full border-border bg-muted text-foreground">
-                          <SelectValue
-                            placeholder={
-                              loadingFields
-                                ? t('personalize.loadingFields')
-                                : customFields.length === 0
-                                  ? t('personalize.noCustomFields')
-                                  : t('personalize.selectCustomField')
-                            }
-                          />
-                        </SelectTrigger>
-                        <SelectContent className="border-border bg-popover">
-                          {customFields.map((f) => (
-                            <SelectItem key={f.id} value={f.id}>
-                              {f.field_name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+      {/* Carousel card scopes — every card text variable and every URL
+          button's trailing variable, one mapping row each, using the
+          identical sources UI as the body placeholders. */}
+      {carouselScopesList.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 pt-1">
+            <Images className="h-4 w-4 text-primary" />
+            <h3 className="text-sm font-medium text-foreground">
+              {t('personalize.carouselScopesTitle')}
+            </h3>
+          </div>
+          {carouselScopesList.map((scope) =>
+            mappingRow(scope.key, scope.label, scope.sample || undefined),
+          )}
         </div>
       )}
 

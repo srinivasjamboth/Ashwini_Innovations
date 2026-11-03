@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { resolveGroupContactIds } from '@/lib/contacts/group-api';
 import { MessageTemplate } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -28,7 +29,11 @@ import {
 interface AudienceConfig {
   type: string;
   tagIds?: string[];
+  /** Groups audience — de-duped member count resolves the reach. */
+  groupIds?: string[];
   csvContacts?: { phone: string; name?: string }[];
+  /** Row-mode count (duplicates preserved) — what actually sends. */
+  csvRows?: { key: string }[];
 }
 
 type SendMode = 'now' | 'schedule';
@@ -141,8 +146,14 @@ export function Step4ScheduleSend({
 
           const uniqueIds = new Set((contactTags ?? []).map((ct) => ct.contact_id));
           setEstimatedReach(uniqueIds.size);
+        } else if (audience.type === 'groups' && audience.groupIds && audience.groupIds.length > 0) {
+          // Members de-duped across the selected groups — the same
+          // resolution the send path freezes into recipients.
+          const memberIds = await resolveGroupContactIds(supabase, audience.groupIds);
+          setEstimatedReach(memberIds.length);
         } else if (audience.type === 'csv' && audience.csvContacts) {
-          setEstimatedReach(audience.csvContacts.length);
+          // Row-mode: every valid row sends, repeats included.
+          setEstimatedReach(audience.csvRows?.length ?? audience.csvContacts.length);
         } else {
           setEstimatedReach(0);
         }
@@ -159,9 +170,11 @@ export function Step4ScheduleSend({
       ? t('scheduleSend.audienceAll')
       : audience.type === 'tags'
         ? t('scheduleSend.audienceTags')
-        : audience.type === 'csv'
-          ? t('scheduleSend.audienceCsv')
-          : t('scheduleSend.audienceField');
+        : audience.type === 'groups'
+          ? t('scheduleSend.audienceGroups')
+          : audience.type === 'csv'
+            ? t('scheduleSend.audienceCsv')
+            : t('scheduleSend.audienceField');
 
   return (
     <div className="space-y-6">

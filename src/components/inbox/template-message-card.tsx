@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import type {
   TemplateMessagePayload,
   TemplatePayloadButton,
+  TemplatePayloadCard,
   TemplatePayloadHeader,
 } from "@/types";
 import { splitWhatsAppMarkup } from "@/lib/whatsapp/template-render";
@@ -332,6 +333,97 @@ function ButtonRow({
   }
 }
 
+/**
+ * One snapshotted carousel card. WhatsApp crops card media wide on the
+ * phone, so the record crops the same way — `object-cover` at a fixed
+ * height rather than the full-frame `object-contain` a single media
+ * header gets. The buttons render through `ButtonRow`, which already
+ * keeps quick replies display-only.
+ */
+function CardImage({
+  url,
+  t,
+}: {
+  url: string;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const { src, status } = useMediaBlobUrl(url);
+  const [broken, setBroken] = useState(false);
+
+  if (status === "error" || broken) {
+    return (
+      <div className="flex h-28 w-full items-center justify-center bg-chat-bubble-foreground/10 text-[11px] text-chat-bubble-muted">
+        {t("photo")}
+      </div>
+    );
+  }
+  if (status !== "ready" || !src) {
+    return (
+      <div className="flex h-28 w-full items-center justify-center bg-chat-bubble-foreground/5">
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-chat-bubble-link border-t-transparent" />
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={t("imageAlt")}
+      className="h-28 w-full object-cover"
+      onError={() => setBroken(true)}
+    />
+  );
+}
+
+function CarouselSnapshotCard({
+  card,
+  t,
+}: {
+  card: TemplatePayloadCard;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  return (
+    <div
+      role="listitem"
+      className="w-56 shrink-0 snap-center overflow-hidden rounded-lg border border-chat-bubble-border bg-chat-bubble-foreground/5"
+    >
+      {card.kind === "video" ? (
+        card.mediaUrl ? (
+          <video
+            src={card.mediaUrl}
+            controls
+            preload="metadata"
+            className="h-28 w-full bg-black/20 object-cover"
+          />
+        ) : (
+          <div className="flex h-28 w-full items-center justify-center bg-chat-bubble-foreground/10 text-[11px] text-chat-bubble-muted">
+            {t("unavailable", { label: t("video") })}
+          </div>
+        )
+      ) : card.mediaUrl ? (
+        <CardImage url={card.mediaUrl} t={t} />
+      ) : (
+        <div className="flex h-28 w-full items-center justify-center bg-chat-bubble-foreground/10 text-[11px] text-chat-bubble-muted">
+          {t("unavailable", { label: t("photo") })}
+        </div>
+      )}
+      {card.text && (
+        <MarkupText
+          text={card.text}
+          className="px-2 pt-1.5 pb-1 text-[13px] leading-snug"
+        />
+      )}
+      {card.buttons.length > 0 && (
+        <div className="flex flex-col gap-0.5 border-t border-chat-bubble-border px-2 py-1">
+          {card.buttons.map((button, i) => (
+            <ButtonRow key={i} button={button} t={t} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TemplateMessageCard({
   payload,
 }: {
@@ -348,6 +440,21 @@ export function TemplateMessageCard({
           text={payload.body}
           className="px-2.5 pt-1.5 pb-1 text-sm leading-[19px]"
         />
+      )}
+
+      {/* Carousel sends only (migration 059 snapshots `cards`): the row
+          the recipient swiped through, read-only. Every value here is
+          this recipient's own — the snapshot substituted the variables
+          at send time, so nothing re-reads the live template. */}
+      {payload.cards && payload.cards.length > 0 && (
+        <div
+          role="list"
+          className="flex snap-x snap-mandatory gap-2 overflow-x-auto px-2.5 pb-1.5"
+        >
+          {payload.cards.map((card) => (
+            <CarouselSnapshotCard key={card.index} card={card} t={t} />
+          ))}
+        </div>
       )}
 
       {payload.footer && (

@@ -145,6 +145,9 @@ export function TemplatePicker({
   }
 
   function pickTemplate(template: MessageTemplate) {
+    // Carousels are Broadcasts-only in this version — belt-and-braces
+    // guard so no path can open the fill dialog for one.
+    if (template.header_type === "carousel") return;
     const slots = collectVariableSlots(template);
     const noInputsNeeded =
       slots.bodyVars.length === 0 &&
@@ -187,6 +190,9 @@ export function TemplatePicker({
       (s) => (buttonParams[s.index] ?? "").trim().length > 0,
     );
 
+  // Captured outside the list map: its callback param shadows `t`.
+  const carouselBroadcastOnlyNote = t("carouselBroadcastOnly");
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="border-border bg-popover sm:max-w-lg">
@@ -216,12 +222,19 @@ export function TemplatePicker({
                 </p>
               </div>
             ) : (
-              templates.map((t) => (
+              templates.map((t) => {
+                const isCarousel = t.header_type === "carousel";
+                return (
                 <button
                   key={t.id}
                   type="button"
+                  disabled={isCarousel}
                   onClick={() => pickTemplate(t)}
-                  className="w-full rounded-md border border-border bg-background/50 p-3 text-left transition-colors hover:border-primary/40 hover:bg-popover"
+                  className={`w-full rounded-md border border-border p-3 text-left transition-colors ${
+                    isCarousel
+                      ? "cursor-not-allowed border-border bg-background/30 opacity-60"
+                      : "bg-background/50 hover:border-primary/40 hover:bg-popover"
+                  }`}
                 >
                   <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
@@ -241,11 +254,19 @@ export function TemplatePicker({
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
                         {t.body_text}
                       </p>
+                      {isCarousel && (
+                        <p className="mt-1 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                          {carouselBroadcastOnlyNote}
+                        </p>
+                      )}
                     </div>
-                    <ChevronRight className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                    {!isCarousel && (
+                      <ChevronRight className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                    )}
                   </div>
                 </button>
-              ))
+                );
+              })
             )}
           </div>
         ) : (

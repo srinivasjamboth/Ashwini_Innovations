@@ -151,6 +151,22 @@ export interface ContactTag {
   tag_id: string;
 }
 
+/** Account-scoped contact group (migration 056). `member_count` is the
+ *  LIVE count computed by the list RPCs — never a stored counter, and
+ *  absent on plain table reads. */
+export interface ContactGroup {
+  id: string;
+  account_id: string;
+  /** 1–50 chars, unique per account ignoring case. */
+  name: string;
+  /** Optional, max 200 chars. */
+  description?: string | null;
+  created_by?: string | null;
+  created_at: string;
+  updated_at: string;
+  member_count?: number;
+}
+
 export interface CustomField {
   id: string;
   user_id: string;
@@ -203,6 +219,13 @@ export interface Conversation {
   ai_autoreply_disabled?: boolean;
   ai_reply_count?: number;
   ai_handoff_summary?: string | null;
+  /**
+   * Mirror of "the latest message in this thread is inbound" —
+   * stamped by the DB (migration 058) on every message INSERT, so
+   * no send path can miss it. Drives the inbox "Replies" tab
+   * (threads awaiting an answer, unread included, any status).
+   */
+  awaiting_reply?: boolean;
 }
 
 // ============================================================
@@ -434,13 +457,68 @@ export interface TemplateSampleValues {
   header?: string[];
 }
 
+// ------------------------------------------------------------
+// Media card carousel (Meta marketing templates) — the JSONB stored on
+// `message_templates.carousel` (migration 059) when `header_type` is
+// 'carousel'. One document describes every card, because Meta requires
+// all cards to share the media format, the card-text decision and the
+// button layout; only labels, URLs, numbers and media may differ.
+// Written and read through src/lib/whatsapp/carousel.ts.
+// ------------------------------------------------------------
+
+/** Card header asset type — shared by every card on the template. */
+export type CarouselMediaFormat = 'image' | 'video';
+
+/** Button kinds Meta allows on a carousel card. */
+export type CarouselButtonKind = 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER';
+
+/** The shared button layout: kinds in the order every card must use. */
+export interface CarouselButtonLayoutItem {
+  type: CarouselButtonKind;
+}
+
+/** One card's button, as the author filled it. */
+export interface CarouselCardButton {
+  type: CarouselButtonKind;
+  /** Label, max 25 chars. */
+  text: string;
+  /** URL buttons only; may end with a single `{{1}}`. */
+  url?: string | null;
+  /** URL buttons only: sample value for the trailing `{{1}}`. */
+  url_example?: string | null;
+  /** PHONE_NUMBER buttons only, with country code, max 20 chars. */
+  phone_number?: string | null;
+}
+
+export interface CarouselCard {
+  /** Durable URL in our storage — what the preview and the send read. */
+  media_url?: string | null;
+  /** Creation-time Meta handle (Resumable Upload) for this card. */
+  media_handle?: string | null;
+  /** Original file name + size, shown in the upload zone. */
+  media_filename?: string | null;
+  media_size?: number | null;
+  /** Card body text; `{{n}}` variables when the card carries text. */
+  text?: string | null;
+  /** Sample values for the card text variables. */
+  text_examples?: string[] | null;
+  buttons: CarouselCardButton[];
+}
+
+export interface CarouselTemplateData {
+  media_format: CarouselMediaFormat;
+  cards_have_text: boolean;
+  button_layout: CarouselButtonLayoutItem[];
+  cards: CarouselCard[];
+}
+
 export interface MessageTemplate {
   id: string;
   user_id: string;
   name: string;
   category: 'Marketing' | 'Utility' | 'Authentication';
   language?: string;
-  header_type?: 'text' | 'image' | 'video' | 'document';
+  header_type?: 'text' | 'image' | 'video' | 'document' | 'carousel';
   header_content?: string;
   header_handle?: string;
   header_media_url?: string;
@@ -448,6 +526,8 @@ export interface MessageTemplate {
   footer_text?: string;
   buttons?: TemplateButton[];
   sample_values?: TemplateSampleValues;
+  /** Card document; set only when `header_type === 'carousel'`. */
+  carousel?: CarouselTemplateData | null;
   status?: MessageTemplateStatus;
   meta_template_id?: string;
   rejection_reason?: string;
@@ -491,6 +571,18 @@ export interface TemplatePayloadButton {
   code?: string | null;
 }
 
+export interface TemplatePayloadCard {
+  /** Which card of the template this is (zero-based, matches Meta). */
+  index: number;
+  kind: CarouselMediaFormat;
+  /** Renderable media for this card, when we have one. */
+  mediaUrl?: string | null;
+  /** Card body with its {{n}} already replaced. */
+  text?: string | null;
+  /** Card buttons in template order, with the URL variable resolved. */
+  buttons: TemplatePayloadButton[];
+}
+
 export interface TemplateMessagePayload {
   name: string;
   language: string;
@@ -500,6 +592,12 @@ export interface TemplateMessagePayload {
   body: string;
   footer?: string | null;
   buttons: TemplatePayloadButton[];
+  /**
+   * Carousel sends only: one entry per card as the recipient saw it.
+   * Absent (undefined) for every other template, including rows written
+   * before migration 059, so the bubble keeps its current shape.
+   */
+  cards?: TemplatePayloadCard[];
 }
 
 export interface Pipeline {
@@ -614,6 +712,14 @@ export interface BroadcastRecipient {
    * Added in migration 038; null on rows created before it.
    */
   template_params?: string[] | null;
+  /**
+   * Audience provenance (migration 057): 'csv' rows were produced by a
+   * CSV upload, one recipient per file row (duplicates preserved).
+   * Null/undefined on rows created before the migration.
+   */
+  source?: 'contact' | 'csv';
+  /** 1-based CSV line this recipient came from (row-mode only). */
+  source_row?: number | null;
   created_at: string;
   contact?: Contact;
 }

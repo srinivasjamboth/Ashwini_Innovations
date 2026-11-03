@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   ForbiddenError,
   UnauthorizedError,
@@ -13,7 +14,11 @@ import {
   mirrorTemplateSampleMedia,
   needsMediaMirror,
 } from '@/lib/whatsapp/template-sample-media'
-import type { TemplateButton, TemplateSampleValues } from '@/types'
+import {
+  carouselFromMetaComponent,
+  parseCarousel,
+} from '@/lib/whatsapp/carousel'
+import type { CarouselTemplateData, TemplateButton, TemplateSampleValues } from '@/types'
 
 /**
  * Sync message templates from Meta → local message_templates table.
@@ -54,6 +59,8 @@ interface MetaTemplateComponent {
     header_handle?: string[]
     body_text?: string[][]
   }
+  /** CAROUSEL only — the nested card components. */
+  cards?: Array<{ components: MetaTemplateComponent[] }>
 }
 
 interface MetaTemplate {
@@ -152,6 +159,58 @@ function extractSampleValues(
   return sv
 }
 
+/**
+ * A carousel has no header component, so its card samples are the only
+ * media Meta returns for it — and, exactly like a media header, they come
+ * back as signed CDN URLs that expire within minutes. Copy each card's
+ * asset into our own public bucket so the row renders in the preview and
+ * can be uploaded for a broadcast send.
+ *
+ * Objects are keyed `…-card-<n>` because `templateSampleObjectPath`
+ * derives the name from the template + language alone, and ten cards of
+ * one template must not overwrite each other.
+ *
+ * Best-effort, like the header mirror. Returns how many cards could not
+ * be copied, which the caller reports as a warning.
+ */
+async function mirrorCarouselCards(args: {
+  storage: SupabaseClient['storage']
+  accountId: string
+  templateName: string
+  language: string
+  accessToken: string
+  data: CarouselTemplateData
+}): Promise<number> {
+  const { storage, accountId, templateName, language, accessToken, data } = args
+  let failed = 0
+
+  for (const [index, card] of data.cards.entries()) {
+    const sampleUrl = card.media_handle
+    // Keep only a real opaque handle. A URL here is Meta's expiring
+    // sample, which must never be re-submitted as `header_handle`.
+    if (isMirrorableSampleUrl(sampleUrl)) card.media_handle = null
+
+    if (!sampleUrl || !isMirrorableSampleUrl(sampleUrl)) {
+      if (!card.media_url) failed++
+      continue
+    }
+    if (card.media_url && !needsMediaMirror(card.media_url)) continue
+
+    const publicUrl = await mirrorTemplateSampleMedia({
+      storage,
+      accountId,
+      templateName: `${templateName}-card-${index}`,
+      language,
+      sampleUrl,
+      accessToken,
+    })
+    if (publicUrl) card.media_url = publicUrl
+    else failed++
+  }
+
+  return failed
+}
+
 export async function POST() {
   try {
     // Syncing rewrites the account-wide template catalog, which is
@@ -238,16 +297,23 @@ export async function POST() {
       const header = (t.components ?? []).find((c) => c.type === 'HEADER')
       const footer = (t.components ?? []).find((c) => c.type === 'FOOTER')
       const buttons = (t.components ?? []).find((c) => c.type === 'BUTTONS')
+      // Unknown component types (a future Meta feature) are simply not
+      // matched here, so a sync keeps working; the carousel is the one
+      // whose content has to be carried into our own row shape.
+      const carouselComponent = (t.components ?? []).find(
+        (c) => c.type === 'CAROUSEL',
+      )
 
       const parsedButtons = parseButtons(buttons?.buttons)
       const sampleValues = extractSampleValues(body, header)
 
       const headerFormat = header?.format?.toUpperCase()
-      const headerType =
-        headerFormat === 'TEXT' ||
-        headerFormat === 'IMAGE' ||
-        headerFormat === 'VIDEO' ||
-        headerFormat === 'DOCUMENT'
+      const headerType = carouselComponent
+        ? 'carousel'
+        : headerFormat === 'TEXT' ||
+          headerFormat === 'IMAGE' ||
+          headerFormat === 'VIDEO' ||
+          headerFormat === 'DOCUMENT'
           ? headerFormat.toLowerCase()
           : null
 
@@ -267,6 +333,9 @@ export async function POST() {
         footer_text: footer?.text ?? null,
         buttons: parsedButtons.length ? parsedButtons : null,
         sample_values: sampleValues,
+        // Replaced below when this template carries a carousel; NULL
+        // otherwise, which is what the CHECK constraint expects.
+        carousel: null,
         status: normalizeStatus(t.status),
         meta_template_id: t.id,
         quality_score: normalizeQualityScore(t.quality_score),
@@ -275,7 +344,7 @@ export async function POST() {
 
       const { data: existing, error: lookupErr } = await supabase
         .from('message_templates')
-        .select('id, header_media_url')
+        .select('id, header_media_url, carousel')
         .eq('account_id', accountId)
         .eq('name', t.name)
         .eq('language', t.language)
@@ -332,9 +401,50 @@ export async function POST() {
         }
       }
 
-      const syncedRow = mirroredMediaUrl
-        ? { ...row, header_media_url: mirroredMediaUrl }
-        : row
+      // A carousel template's cards live in our own JSONB document, in
+      // the same shape the builder writes, so a template created in
+      // WhatsApp Manager shows up here fully editable and sendable. The
+      // previously stored document is passed in so an asset we already
+      // mirrored (or attached by hand) survives the re-sync.
+      let carouselDoc: CarouselTemplateData | null = null
+      if (carouselComponent) {
+        const parsed = carouselFromMetaComponent(
+          carouselComponent,
+          parseCarousel(existing?.carousel),
+        )
+        if (!parsed) {
+          mediaWarnings.push({
+            name: t.name,
+            language: t.language,
+            message:
+              'The carousel on this template could not be read from Meta. Its status is synced, but the cards are not editable or sendable from here.',
+          })
+        } else {
+          const failedCards = await mirrorCarouselCards({
+            storage: supabase.storage,
+            accountId,
+            templateName: t.name,
+            language: t.language,
+            accessToken,
+            data: parsed,
+          })
+          if (failedCards > 0) {
+            mediaWarnings.push({
+              name: t.name,
+              language: t.language,
+              message: `${failedCards} carousel card(s) could not be copied from Meta. Sends of this template will fail until the media is attached to it again.`,
+            })
+          }
+          carouselDoc = parsed
+        }
+      }
+
+      const syncedRow = {
+        ...(mirroredMediaUrl
+          ? { ...row, header_media_url: mirroredMediaUrl }
+          : row),
+        carousel: carouselDoc,
+      }
 
       if (existing?.id) {
         const { error: updErr } = await supabase

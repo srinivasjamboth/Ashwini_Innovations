@@ -10,6 +10,14 @@ export interface ParsedContactRow {
   company?: string;
   /** Tag names from the optional `tags` column (comma/semicolon separated). */
   tagNames: string[];
+  /**
+   * 1-based physical CSV line where this record starts. Only populated
+   * when `parseContactCsv` is called with `withRowNumbers` — the
+   * contacts importer never reads it, and the broadcast wizard's
+   * duplicate-preserving mode uses it to show each recipient which row
+   * of the uploaded file produced them.
+   */
+  sourceRow?: number;
 }
 
 /** Split a CSV cell into unique tag names (case-insensitive de-dupe). */
@@ -46,9 +54,12 @@ export interface ParseContactCsvResult {
   hasCompanyColumn: boolean;
 }
 
-export function parseContactCsv(text: string): ParseContactCsvResult {
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 2) {
+export function parseContactCsv(text: string, withRowNumbers = false): ParseContactCsvResult {
+  // Excel writes a UTF-8 BOM at the start of "CSV UTF-8" exports; left in
+  // place it becomes part of the first header cell ("\uFEFFphone") and the
+  // phone column silently disappears from the header scan.
+  const records = scanCsvRecords(stripBom(text));
+  if (records.length < 2) {
     return {
       rows: [],
       hasPhoneColumn: false,
@@ -57,7 +68,10 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
     };
   }
 
-  const headers = lines[0]
+  // Record 0 is the header line; the remainder are data records. Scan
+  // is quote-aware, so a quoted cell containing a newline stays ONE
+  // record (splitting on raw newlines used to tear such rows in half).
+  const headers = records[0].text
     .split(',')
     .map((h) => h.trim().toLowerCase().replace(/["']/g, ''));
 
@@ -87,8 +101,8 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
 
   const rows: ParsedContactRow[] = [];
 
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
+  for (let i = 1; i < records.length; i++) {
+    const line = records[i].text.trim();
     if (!line) continue;
 
     const values = parseCsvLine(line);
@@ -121,6 +135,9 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
           : undefined,
       tagNames:
         tagsIdx >= 0 ? parseTagCell(values[tagsIdx]?.replace(/["']/g, '')) : [],
+      // Set only when requested — callers that don't ask get byte-identical
+      // row objects to before, which their equality checks depend on.
+      ...(withRowNumbers ? { sourceRow: records[i].line } : {}),
     });
   }
 
@@ -156,6 +173,52 @@ export function composeInternationalPhone(
 
   const cc = countryCode.replace(/\D/g, '');
   return cc ? `+${cc}${digits}` : raw;
+}
+
+/** Strip the leading UTF-8 BOM Excel prepends to "CSV UTF-8" exports. */
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+/**
+ * Split CSV text into logical records, honouring quoted fields that
+ * contain newlines. `line` is the 1-based physical line the record
+ * starts on — what the broadcast review shows next to each recipient.
+ *
+ * Quote tracking works on whole chunks (a lone `"` inside an unquoted
+ * cell is dropped downstream by the cell scrubbers anyway), so an odd
+ * number of quotes in one line merely extends the record to the line
+ * that closes it rather than corrupting the fields before it.
+ */
+function scanCsvRecords(text: string): { text: string; line: number }[] {
+  const physical = text.split(/\r?\n/);
+  const records: { text: string; line: number }[] = [];
+  let current: string[] = [];
+  let quoteCount = 0;
+  let startLine = 1;
+
+  physical.forEach((chunk, idx) => {
+    if (current.length === 0) startLine = idx + 1;
+    current.push(chunk);
+    for (const char of chunk) {
+      if (char === '"') quoteCount++;
+    }
+    // Even quote count = no open quoted cell = record complete.
+    if (quoteCount % 2 === 0) {
+      records.push({ text: current.join('\n'), line: startLine });
+      current = [];
+      quoteCount = 0;
+    }
+  });
+  // Unterminated quote at EOF: flush what's left so the row is at least
+  // visible (invalid) instead of silently vanishing.
+  if (current.length > 0) records.push({ text: current.join('\n'), line: startLine });
+
+  // Keep the original leading/trailing-whitespace semantics: global trim
+  // on the first record (BOM/indent before the header) and drop records
+  // that are blank after trimming, exactly as the line-split version did.
+  if (records.length > 0) records[0] = { text: records[0].text.trim(), line: 1 };
+  return records;
 }
 
 /** Simple CSV line parse (handles quoted fields). */

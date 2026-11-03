@@ -232,7 +232,12 @@ export default function BroadcastDetailPage() {
 
   function handleExport() {
     if (!broadcast) return;
+    // Row-mode CSV campaigns keep one recipient per file row — the
+    // export carries the line number so repeats stay distinguishable.
+    // Other campaigns export the exact columns they always did.
+    const hasCsvRows = recipients.some((r) => r.source_row != null);
     const header = [
+      ...(hasCsvRows ? [t('table.row')] : []),
       t('table.contact'),
       t('table.phone'),
       t('table.status'),
@@ -242,6 +247,7 @@ export default function BroadcastDetailPage() {
       t('table.error'),
     ];
     const rows = recipients.map((r) => [
+      ...(hasCsvRows ? [String(r.source_row ?? '')] : []),
       r.contact?.name ?? '',
       r.contact?.phone ?? '',
       r.status,
@@ -898,7 +904,15 @@ export default function BroadcastDetailPage() {
                   return (
                     <TableRow key={recipient.id} className="border-border">
                       <TableCell className="font-medium text-foreground">
-                        {recipient.contact?.name ?? 'Unknown'}
+                        <div className="flex items-center gap-2">
+                          {recipient.source === 'csv' &&
+                            recipient.source_row != null && (
+                              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                {t('table.rowLabel', { row: recipient.source_row })}
+                              </span>
+                            )}
+                          {recipient.contact?.name ?? 'Unknown'}
+                        </div>
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {recipient.contact?.phone ?? '-'}

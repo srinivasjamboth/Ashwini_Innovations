@@ -117,7 +117,10 @@ export function FlowTestPanel({
     () => ({
       tagNames: Object.fromEntries(resources.tags.map((tg) => [tg.id, tg.name])),
       templates: Object.fromEntries(
-        resources.templates.map((tm) => [tm.name, { body_text: tm.body_text, buttons: tm.buttons }]),
+        resources.templates.map((tm) => [
+          tm.name,
+          { body_text: tm.body_text, buttons: tm.buttons, header_type: tm.header_type },
+        ]),
       ),
       flowNames: Object.fromEntries(resources.publishedFlows.map((f) => [f.id, f.name])),
     }),
