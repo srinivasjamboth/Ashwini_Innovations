@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 /**
  * Pricing — the template's pricing block: the pill nav (`nav-pills`
@@ -37,16 +37,35 @@
  *     plan yet"); no card ever advertises a checkout that cannot complete.
  *     Payments not being configured is NOT that case — it would stop monthly
  *     as well, so it must not silence a yearly price on the pricing page.
+ *
+ * Subscribe (billing in place): a left click on a paid plan's CTA opens
+ * <CheckoutScrollOverlay> — the same billing UI `/checkout` renders, inside a
+ * perspective card that straightens as it settles. The `href` stays exactly
+ * where it was, so middle-click, "open in new tab", a search-engine or
+ * no-JS visit and the post-login redirect all still get the real
+ * `/checkout?plan=&cycle=` page. The overlay is loaded on demand
+ * (`next/dynamic`, ssr: false) so the landing keeps prerendering statically
+ * and pays for the animation only when someone actually subscribes.
  */
 
-import { useCallback, useEffect, useSyncExternalStore, useState } from "react";
-import { motion } from "framer-motion";
-import NumberFlow from "@number-flow/react";
+import { useCallback, useEffect, useSyncExternalStore, useState } from 'react';
+import dynamic from 'next/dynamic';
+import { motion } from 'framer-motion';
+import NumberFlow from '@number-flow/react';
 
-import { LandingIcon, ICON_SIZE } from "@/components/marketing/landing-icons";
-import { cardLimitPeriods, cardLimits, type PlanCard } from "@/lib/plans/catalog";
-import { TRIAL_DAYS, UNLIMITED, type FeatureFlag, type LimitFeature } from "@/lib/plans/config";
-import { formatCount } from "@/lib/currency";
+import { LandingIcon, ICON_SIZE } from '@/components/marketing/landing-icons';
+import {
+  cardLimitPeriods,
+  cardLimits,
+  type PlanCard,
+} from '@/lib/plans/catalog';
+import {
+  TRIAL_DAYS,
+  UNLIMITED,
+  type FeatureFlag,
+  type LimitFeature,
+} from '@/lib/plans/config';
+import { formatCount } from '@/lib/currency';
 
 import {
   LANDING_BILLING_PERIODS,
@@ -55,12 +74,29 @@ import {
   LANDING_PLANS,
   LANDING_PRICING_HEADLINE,
   type LandingPlan,
-} from "@/lib/marketing/landing-content";
+} from '@/lib/marketing/landing-content';
 
-type BillingPeriod = (typeof LANDING_BILLING_PERIODS)[number]["key"];
+type BillingPeriod = (typeof LANDING_BILLING_PERIODS)[number]['key'];
+
+// Client-only: the overlay portals to document.body and owns framer-motion
+// motion values, neither of which has anything to render on the server.
+const CheckoutScrollOverlay = dynamic(
+  () =>
+    import('@/components/plans/checkout-scroll-overlay').then(
+      (mod) => mod.CheckoutScrollOverlay
+    ),
+  { ssr: false }
+);
+
+/** What the open scroller shows — plan + the cycle its card was selling. */
+interface OpenCheckout {
+  planId: string;
+  planName: string;
+  cycle: 'monthly' | 'yearly';
+}
 
 /** Shareable cycle selection: `?billing=yearly`. */
-const BILLING_PARAM = "billing";
+const BILLING_PARAM = 'billing';
 
 // ---- the cycle choice as an external store ---------------------------
 // The URL is the source of truth, so the toggle is read with
@@ -73,18 +109,20 @@ const BILLING_PARAM = "billing";
 const periodListeners = new Set<() => void>();
 
 function readPeriodFromUrl(): BillingPeriod {
-  const fromUrl = new URLSearchParams(window.location.search).get(BILLING_PARAM);
-  return fromUrl === "yearly" ? "yearly" : "monthly";
+  const fromUrl = new URLSearchParams(window.location.search).get(
+    BILLING_PARAM
+  );
+  return fromUrl === 'yearly' ? 'yearly' : 'monthly';
 }
 
 function subscribePeriod(onChange: () => void): () => void {
   periodListeners.add(onChange);
   // Back/forward after an in-page URL rewrite changes `?billing=` without
   // this component remounting.
-  window.addEventListener("popstate", onChange);
+  window.addEventListener('popstate', onChange);
   return () => {
     periodListeners.delete(onChange);
-    window.removeEventListener("popstate", onChange);
+    window.removeEventListener('popstate', onChange);
   };
 }
 
@@ -95,7 +133,7 @@ function getPeriodSnapshot(): BillingPeriod {
 /** Server snapshot / pre-hydration snapshot: monthly is the documented
  *  default, so the shared-card markup never depends on the query string. */
 function getPeriodServerSnapshot(): BillingPeriod {
-  return "monthly";
+  return 'monthly';
 }
 
 function writePeriodToUrl(next: BillingPeriod): void {
@@ -104,7 +142,11 @@ function writePeriodToUrl(next: BillingPeriod): void {
   // choice so it can be shared and survives a refresh.
   const url = new URL(window.location.href);
   url.searchParams.set(BILLING_PARAM, next);
-  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  window.history.replaceState(
+    window.history.state,
+    '',
+    `${url.pathname}${url.search}${url.hash}`
+  );
 }
 
 // ---- DB → presentational mapping ------------------------------------
@@ -114,44 +156,44 @@ function writePeriodToUrl(next: BillingPeriod): void {
 // the stored limit's own period, which is what makes "…/month" on the
 // monthly card and "…/year" on the yearly card the same line of code.
 const LIMIT_BULLETS: { key: LimitFeature; label: string }[] = [
-  { key: "contacts", label: "Contacts" },
-  { key: "bulk_messages", label: "Bulk broadcast messages" },
-  { key: "templates", label: "Templates" },
-  { key: "quick_replies", label: "Quick replies" },
-  { key: "automation_flows", label: "Automation flows" },
-  { key: "whatsapp_forms", label: "WhatsApp forms" },
-  { key: "team_members", label: "Team members" },
+  { key: 'contacts', label: 'Contacts' },
+  { key: 'bulk_messages', label: 'Bulk broadcast messages' },
+  { key: 'templates', label: 'Templates' },
+  { key: 'quick_replies', label: 'Quick replies' },
+  { key: 'automation_flows', label: 'Automation flows' },
+  { key: 'whatsapp_forms', label: 'WhatsApp forms' },
+  { key: 'team_members', label: 'Team members' },
 ];
 const FEATURE_BULLETS: { key: FeatureFlag; label: string }[] = [
-  { key: "fields_tags", label: "Fields & Tags" },
-  { key: "broadcast_scheduler", label: "Broadcast Scheduler" },
-  { key: "ai_agent", label: "WhatsApp AI Agent" },
+  { key: 'fields_tags', label: 'Fields & Tags' },
+  { key: 'broadcast_scheduler', label: 'Broadcast Scheduler' },
+  { key: 'ai_agent', label: 'WhatsApp AI Agent' },
 ];
 
 // Presentation only — keyed by plan id, with a neutral default. Never
 // touches a price or a limit.
-const PRESENTATION: Record<string, { tone: "primary" | "secondary"; popular?: boolean }> = {
-  trial: { tone: "primary" },
-  starter: { tone: "primary" },
-  growth: { tone: "secondary", popular: true },
-  enterprise: { tone: "secondary" },
+const PRESENTATION: Record<
+  string,
+  { tone: 'primary' | 'secondary'; popular?: boolean }
+> = {
+  trial: { tone: 'primary' },
+  starter: { tone: 'primary' },
+  growth: { tone: 'secondary', popular: true },
+  enterprise: { tone: 'secondary' },
 };
 
 /** The window word for a figure, from the figure's OWN stored period. */
 function periodWord(feature: LimitFeature, period: string | undefined): string {
-  if (period === "yearly") return "/year";
-  if (period === "monthly") return "/month";
+  if (period === 'yearly') return '/year';
+  if (period === 'monthly') return '/month';
   // 'total' = a count of stored rows (Contacts, Templates…), so it has no
   // window at all. The one exception is the trial's bulk allowance, which
   // is a single pool for the whole 7 days — saying "/month" there was the
   // label bug this file used to have.
-  return feature === "bulk_messages" ? ` for ${TRIAL_DAYS} days` : "";
+  return feature === 'bulk_messages' ? ` for ${TRIAL_DAYS} days` : '';
 }
 
-function bulletsFor(
-  plan: PlanCard,
-  cycle: "monthly" | "yearly",
-): string[] {
+function bulletsFor(plan: PlanCard, cycle: 'monthly' | 'yearly'): string[] {
   const limits = cardLimits(plan, cycle);
   const periods = cardLimitPeriods(plan, cycle);
   const out: string[] = [];
@@ -163,41 +205,47 @@ function bulletsFor(
       // would change, and an unlimited pool has none worth printing.
       out.push(`Unlimited ${b.label.toLowerCase()}`);
     } else {
-      out.push(`${formatCount(v)} ${b.label}${periodWord(b.key, periods[b.key])}`);
+      out.push(
+        `${formatCount(v)} ${b.label}${periodWord(b.key, periods[b.key])}`
+      );
     }
   }
   for (const f of FEATURE_BULLETS) {
     if (plan.features[f.key]) out.push(f.label);
   }
-  out.push("Customer Support");
+  out.push('Customer Support');
   return out;
 }
 
 // Turn a DB plan row into the shape the card markup consumes.
 function toLandingPlan(plan: PlanCard): LandingPlan {
-  const pres = PRESENTATION[plan.id] ?? { tone: plan.isPaid ? "secondary" : "primary" };
-  const priceFor = (cycle: "monthly" | "yearly") => {
+  const pres = PRESENTATION[plan.id] ?? {
+    tone: plan.isPaid ? 'secondary' : 'primary',
+  };
+  const priceFor = (cycle: 'monthly' | 'yearly') => {
     const p = plan.prices[cycle];
-    return p === UNLIMITED || p === 0 ? "0" : formatCount(p);
+    return p === UNLIMITED || p === 0 ? '0' : formatCount(p);
   };
   const trial = !plan.isPaid;
   return {
     id: plan.id,
-    name: plan.tagline && trial ? "7-Day Free Trial" : plan.name,
-    tagline: plan.tagline ?? "",
-    monthly: priceFor("monthly"),
+    name: plan.tagline && trial ? '7-Day Free Trial' : plan.name,
+    tagline: plan.tagline ?? '',
+    monthly: priceFor('monthly'),
     // The trial has no yearly version: its "yearly" figure IS its monthly
     // figure so the card cannot change when the toggle moves. A paid plan with
     // no yearly price row keeps its monthly amount too — never "₹0 / Year".
     yearly:
-      trial || plan.prices.yearly <= 0 ? priceFor("monthly") : priceFor("yearly"),
-    includes: bulletsFor(plan, "monthly"),
-    yearlyIncludes: trial ? undefined : bulletsFor(plan, "yearly"),
+      trial || plan.prices.yearly <= 0
+        ? priceFor('monthly')
+        : priceFor('yearly'),
+    includes: bulletsFor(plan, 'monthly'),
+    yearlyIncludes: trial ? undefined : bulletsFor(plan, 'yearly'),
     yearlyShown: plan.yearlyShown,
     yearlyAvailable: plan.yearlyAvailable,
     tone: pres.tone,
     popular: pres.popular,
-    cta: plan.isPaid ? "Subscribe" : "Start free trial",
+    cta: plan.isPaid ? 'Subscribe' : 'Start free trial',
     trial,
   };
 }
@@ -206,7 +254,7 @@ export function LandingPricing() {
   const period = useSyncExternalStore(
     subscribePeriod,
     getPeriodSnapshot,
-    getPeriodServerSnapshot,
+    getPeriodServerSnapshot
   );
   const [plans, setPlans] = useState<LandingPlan[]>(
     // Fallback so the block renders on the very first paint / if the
@@ -219,6 +267,36 @@ export function LandingPricing() {
   // is a per-card concern: a plan without a complete yearly offer keeps its
   // monthly figures and says so (see `showNote`).
   const [yearlyOn, setYearlyOn] = useState(true);
+  // The billing scroller — null = closed. Holds only what the clicked card
+  // was already selling (plan key + the cycle it showed), so opening it can
+  // never invent an offer the card did not display.
+  const [openCheckout, setOpenCheckout] = useState<OpenCheckout | null>(null);
+
+  const openBilling = useCallback(
+    (
+      event: React.MouseEvent<HTMLAnchorElement>,
+      plan: LandingPlan,
+      cycle: 'monthly' | 'yearly'
+    ) => {
+      // Plain primary click only. A modifier-click, middle click or a
+      // preventDefault from elsewhere keeps following the real href, so
+      // "open in new tab" and similar still get the `/checkout` page.
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
+      if (!plan.id) return;
+      event.preventDefault();
+      setOpenCheckout({ planId: plan.id, planName: plan.name, cycle });
+    },
+    []
+  );
 
   const choosePeriod = useCallback((next: BillingPeriod) => {
     if (readPeriodFromUrl() === next) return;
@@ -232,10 +310,14 @@ export function LandingPricing() {
     let alive = true;
     void (async () => {
       try {
-        const res = await fetch("/api/billing/plans", { cache: "default" });
+        const res = await fetch('/api/billing/plans', { cache: 'default' });
         if (!res.ok) return;
-        const data = (await res.json()) as { plans: PlanCard[]; yearlyBilling?: boolean };
-        if (!alive || !Array.isArray(data.plans) || data.plans.length === 0) return;
+        const data = (await res.json()) as {
+          plans: PlanCard[];
+          yearlyBilling?: boolean;
+        };
+        if (!alive || !Array.isArray(data.plans) || data.plans.length === 0)
+          return;
         setPlans(data.plans.map(toLandingPlan));
         // Flag off = the whole cycle is switched off, hide the toggle.
         // Flag on  = the toggle stays, whatever the plans' own state is.
@@ -249,41 +331,56 @@ export function LandingPricing() {
     };
   }, []);
 
-  const showYearly = yearlyOn && period === "yearly";
-  const active = LANDING_BILLING_PERIODS.find((option) => option.key === (showYearly ? "yearly" : "monthly"));
+  const showYearly = yearlyOn && period === 'yearly';
+  const active = LANDING_BILLING_PERIODS.find(
+    (option) => option.key === (showYearly ? 'yearly' : 'monthly')
+  );
 
   return (
-    <div className="container-fluid py-5 anchor" id="pricing">
-      <div className="container-xxl py-5 px-lg-5">
-        <div className="text-center wow fadeInUp" data-wow-delay="0.1s">
-          <h5 className="text-primary-gradient fw-medium">{LANDING_PRICING_HEADLINE.eyebrow}</h5>
+    <div className="container-fluid anchor py-5" id="pricing">
+      <div className="container-xxl px-lg-5 py-5">
+        <div className="wow fadeInUp text-center" data-wow-delay="0.1s">
+          <h5 className="text-primary-gradient fw-medium">
+            {LANDING_PRICING_HEADLINE.eyebrow}
+          </h5>
           <h1 className="mb-5">{LANDING_PRICING_HEADLINE.headline}</h1>
         </div>
 
-        <div className="tab-class text-center pricing wow fadeInUp" data-wow-delay="0.1s">
+        <div
+          className="tab-class pricing wow fadeInUp text-center"
+          data-wow-delay="0.1s"
+        >
           {yearlyOn && (
             <ul className="nav nav-pills d-inline-flex justify-content-center bg-primary-gradient rounded-pill mb-5">
               {LANDING_BILLING_PERIODS.map((option) => {
-                const isActive = option.key === (showYearly ? "yearly" : "monthly");
+                const isActive =
+                  option.key === (showYearly ? 'yearly' : 'monthly');
                 return (
                   <li className="nav-item" key={option.key}>
                     <button
                       type="button"
-                      className={`nav-link ${isActive ? "active" : ""}`}
+                      className={`nav-link ${isActive ? 'active' : ''}`}
                       aria-pressed={isActive}
                       onClick={() => choosePeriod(option.key)}
                       // The active fill is painted by the sliding pill below,
                       // not the button's own background — the pill carries the
                       // identical bg-primary-gradient, so the resting look is
                       // byte-identical to the static CSS ever was.
-                      style={{ position: "relative", ...(isActive ? { background: "transparent" } : null) }}
+                      style={{
+                        position: 'relative',
+                        ...(isActive ? { background: 'transparent' } : null),
+                      }}
                     >
                       {isActive && (
                         <motion.span
                           layoutId="pricing-period-pill"
-                          className="position-absolute top-0 start-0 w-100 h-100 rounded-pill bg-primary-gradient"
+                          className="position-absolute rounded-pill bg-primary-gradient start-0 top-0 h-100 w-100"
                           style={{ zIndex: 0 }}
-                          transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                          transition={{
+                            type: 'spring',
+                            stiffness: 500,
+                            damping: 30,
+                          }}
                         />
                       )}
                       <span className="position-relative" style={{ zIndex: 1 }}>
@@ -310,7 +407,9 @@ export function LandingPricing() {
                     plan.yearlyShown ?? plan.yearlyIncludes !== undefined;
                   const yearlyShown = showYearly && !trial && hasYearlyFigures;
                   const bullets =
-                    yearlyShown && plan.yearlyIncludes ? plan.yearlyIncludes : plan.includes;
+                    yearlyShown && plan.yearlyIncludes
+                      ? plan.yearlyIncludes
+                      : plan.includes;
                   const price = yearlyShown ? plan.yearly : plan.monthly;
                   // The price stays the SAME formatted figure the card always
                   // showed — NumberFlow only animates the transition between
@@ -319,29 +418,30 @@ export function LandingPricing() {
                   // or currency), so stripping non-digits recovers the exact
                   // number; anything unexpected falls back to plain text so a
                   // number can never be misrendered by the animation.
-                  const priceDigits = price.replace(/[^0-9]/g, "");
+                  const priceDigits = price.replace(/[^0-9]/g, '');
                   const priceNumber =
-                    priceDigits === "" ? Number.NaN : Number(priceDigits);
+                    priceDigits === '' ? Number.NaN : Number(priceDigits);
                   const suffix = trial
                     ? ` / ${TRIAL_DAYS} days`
                     : yearlyShown
-                      ? (active?.suffix ?? "")
-                      : (LANDING_BILLING_PERIODS[0]?.suffix ?? "");
+                      ? (active?.suffix ?? '')
+                      : (LANDING_BILLING_PERIODS[0]?.suffix ?? '');
                   const unavailableNote =
-                    "Yearly billing is not available for this plan yet";
+                    'Yearly billing is not available for this plan yet';
                   const showNote =
                     showYearly && !trial && plan.yearlyAvailable === false;
                   // The cycle the CTA actually buys: yearly only when the
                   // toggle is on AND this plan has a real yearly offer,
                   // otherwise monthly (the card is showing monthly figures).
-                  const effectiveCycle: "monthly" | "yearly" =
-                    showYearly && !showNote ? "yearly" : "monthly";
-                  // Subscribe opens the public billing/checkout page for the
-                  // chosen plan + cycle — exactly like any other SaaS: the
-                  // visitor sees the order summary and pays there. No login,
-                  // no inline checkout, nothing else. A middle-click, keyboard
-                  // open or no-JS visit all land on the same billing page.
-                  // The trial card has nothing to buy, so it stays a signup.
+                  const effectiveCycle: 'monthly' | 'yearly' =
+                    showYearly && !showNote ? 'yearly' : 'monthly';
+                  // Where the CTA leads. A plain click on a paid plan opens
+                  // the billing scroller over this section; the href is the
+                  // public `/checkout` page for the same plan + cycle, which
+                  // is what every non-click path (middle click, new tab,
+                  // no-JS, shared link, post-login redirect) follows — and
+                  // what the scroller itself would render. The trial card has
+                  // nothing to buy, so it stays a signup.
                   const ctaHref =
                     trial || !plan.id
                       ? LANDING_BRAND.signupHref
@@ -350,17 +450,19 @@ export function LandingPricing() {
                   return (
                     <div className="col-lg-3 col-md-6" key={plan.name}>
                       <div
-                        className={`bg-light rounded position-relative h-100 ${
-                          plan.popular ? "border border-primary border-2" : ""
+                        className={`bg-light position-relative h-100 rounded ${
+                          plan.popular ? 'border-primary border border-2' : ''
                         }`}
                       >
                         {plan.popular && (
-                          <span className="badge rounded-pill text-white bg-primary-gradient position-absolute top-0 start-50 translate-middle px-3">
+                          <span className="badge rounded-pill bg-primary-gradient position-absolute translate-middle start-50 top-0 px-3 text-white">
                             Most Popular
                           </span>
                         )}
-                        <div className="border-bottom p-4 mb-4">
-                          <h4 className="text-primary-gradient mb-1">{plan.name}</h4>
+                        <div className="border-bottom mb-4 p-4">
+                          <h4 className="text-primary-gradient mb-1">
+                            {plan.name}
+                          </h4>
                           <span>{plan.tagline}</span>
                         </div>
                         <div className="p-4 pt-0">
@@ -370,18 +472,21 @@ export function LandingPricing() {
                           >
                             <small
                               className="align-top"
-                              style={{ fontSize: 22, lineHeight: "45px" }}
+                              style={{ fontSize: 22, lineHeight: '45px' }}
                             >
                               {LANDING_CURRENCY}
                             </small>
                             {Number.isFinite(priceNumber) ? (
-                              <NumberFlow value={priceNumber} format={{ maximumFractionDigits: 0 }} />
+                              <NumberFlow
+                                value={priceNumber}
+                                format={{ maximumFractionDigits: 0 }}
+                              />
                             ) : (
                               price
                             )}
                             <small
                               className="align-bottom"
-                              style={{ fontSize: 16, lineHeight: "40px" }}
+                              style={{ fontSize: 16, lineHeight: '40px' }}
                             >
                               {suffix}
                             </small>
@@ -390,7 +495,10 @@ export function LandingPricing() {
                               visible on the card, not hidden in a tooltip —
                               otherwise the card looks like a broken toggle. */}
                           {showNote && (
-                            <p className="mb-2" style={{ fontSize: 13, opacity: 0.7 }}>
+                            <p
+                              className="mb-2"
+                              style={{ fontSize: 13, opacity: 0.7 }}
+                            >
                               {unavailableNote}
                             </p>
                           )}
@@ -398,23 +506,29 @@ export function LandingPricing() {
                             <div
                               key={item}
                               className={`d-flex justify-content-between ${
-                                row === bullets.length - 1 ? "mb-2" : "mb-3"
+                                row === bullets.length - 1 ? 'mb-2' : 'mb-3'
                               }`}
                             >
                               <span>{item}</span>
                               <LandingIcon
                                 name="fa-check"
                                 size={ICON_SIZE.inline}
-                                className="text-primary flex-shrink-0 ms-2"
+                                className="text-primary ms-2 flex-shrink-0"
                               />
                             </div>
                           ))}
                           <a
                             href={ctaHref}
+                            onClick={
+                              trial
+                                ? undefined
+                                : (event) =>
+                                    openBilling(event, plan, effectiveCycle)
+                            }
                             title={showNote ? unavailableNote : undefined}
-                            className={`btn btn-${plan.tone}-gradient rounded-pill py-2 px-4 mt-4`}
+                            className={`btn btn-${plan.tone}-gradient rounded-pill mt-4 px-4 py-2`}
                           >
-                            {plan.cta ?? "Start free trial"}
+                            {plan.cta ?? 'Start free trial'}
                           </a>
                         </div>
                       </div>
@@ -426,6 +540,18 @@ export function LandingPricing() {
           </div>
         </div>
       </div>
+
+      {/* Billing in place — the same <CheckoutPanel> `/checkout` renders,
+          framed by the scroll animation. Portals to document.body, so its
+          position in this tree is only about when it exists. */}
+      {openCheckout && (
+        <CheckoutScrollOverlay
+          planId={openCheckout.planId}
+          planName={openCheckout.planName}
+          cycle={openCheckout.cycle}
+          onClose={() => setOpenCheckout(null)}
+        />
+      )}
     </div>
   );
 }
