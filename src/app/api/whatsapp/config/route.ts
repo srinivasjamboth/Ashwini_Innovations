@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 import {
   getSubscribedApps,
+  getWabaBusiness,
   listWabaPhoneNumbers,
   registerPhoneNumber,
   subscribeWabaToApp,
@@ -427,7 +428,7 @@ export async function POST(request: Request) {
     // rather than null it out.
     const { data: existing } = await supabase
       .from('whatsapp_config')
-      .select('id, registered_at, phone_number_id, verify_token')
+      .select('id, registered_at, phone_number_id, verify_token, waba_id, business_id')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -540,12 +541,36 @@ export async function POST(request: Request) {
       }
     }
 
+    // Portfolio id for the Settings → WhatsApp Billing Hub link
+    // (migration 061). Captured at connect time for BOTH paths, since
+    // every connect funnels through this handler. Soft failure by
+    // design: a missing id never blocks the connect — the billing-link
+    // endpoint retries lazily and the UI falls back to the base
+    // Billing Hub URL. A previous id is kept when the WABA is unchanged
+    // and Meta refuses this time (transient outage on a re-save).
+    let businessId: string | null = null
+    if (waba_id) {
+      try {
+        const owners = await getWabaBusiness({
+          wabaId: waba_id,
+          accessToken: access_token,
+        })
+        businessId = owners[0]?.id ?? null
+      } catch (err) {
+        console.warn('[whatsapp/config POST] owner business lookup failed:', err)
+      }
+      if (!businessId && existing && existing.waba_id === waba_id) {
+        businessId = existing.business_id ?? null
+      }
+    }
+
     // Persist everything in one shot. If /register failed we still
     // store the credentials and the error so the UI can guide the
     // user through a retry.
     const baseRow = {
       phone_number_id,
       waba_id: waba_id || null,
+      business_id: businessId,
       access_token: encryptedAccessToken,
       verify_token: encryptedVerifyToken,
       status: registrationError ? 'disconnected' : 'connected',

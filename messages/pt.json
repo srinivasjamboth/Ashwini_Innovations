@@ -2286,6 +2286,12 @@
         "activeMissingWarning": "O número de envio não consta mais nesta conta. Selecione abaixo um novo número ativo.",
         "syncSummary": "{numbers} número(s) encontrado(s) em {wabas} conta(s) do WhatsApp Business."
       },
+      "billing": {
+        "title": "Cobrança e pagamentos (Meta)",
+        "help": "As cobranças por mensagens são faturadas pela Meta, separadamente da sua assinatura Ashwini. Adicione um método de pagamento ou fundos e pague seu saldo no Meta Business Suite.",
+        "button": "Abrir Cobrança e pagamentos da Meta",
+        "accessNote": "Você precisa de acesso de administrador ou financeiro à conta comercial da Meta."
+      },
       "disconnect": {
         "button": "Desconectar",
         "confirmTitle": "Desconectar o WhatsApp?",

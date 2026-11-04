@@ -2296,6 +2296,12 @@
         "activeMissingWarning": "전송 번호가 더 이상 이 계정에 등록되어 있지 않습니다. 아래에서 새 활성 번호를 선택하세요.",
         "syncSummary": "{wabas}개의 WhatsApp 비즈니스 계정에서 {numbers}개의 번호를 찾았습니다."
       },
+      "billing": {
+        "title": "결제 및 입금 (Meta)",
+        "help": "메시지 요금은 Ashwini 구독과 별도로 Meta에서 청구됩니다. Meta 비즈니스 스위트에서 결제 수단 또는 금액을 추가하고 미지급금을 결제하세요.",
+        "button": "Meta 결제 및 입금 열기",
+        "accessNote": "Meta 비즈니스 계정의 관리자 또는 재무 권한이 필요합니다."
+      },
       "disconnect": {
         "button": "연결 해제",
         "confirmTitle": "WhatsApp 연결을 해제할까요?",

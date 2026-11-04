@@ -25,6 +25,7 @@ import { Switch } from '@/components/ui/switch';
 import { SettingsPanelHead } from './settings-panel-head';
 import { WhatsAppEmbeddedSignup } from './whatsapp-embedded-signup';
 import { WhatsAppStatusCard } from './whatsapp-status-card';
+import { WhatsAppBillingCard } from './whatsapp-billing-card';
 import {
   Dialog,
   DialogContent,
@@ -812,6 +813,13 @@ export function WhatsAppConfig() {
             switchingId={switchingActiveId}
             onSetActive={handleSetActiveNumber}
           />
+        )}
+
+        {/* Meta billing — connected state only, and only for users who
+            hold the same settings permission the billing-link endpoint
+            requires. One link, one helper (src/lib/whatsapp/billing-link). */}
+        {connectionStatus === 'connected' && canEditSettings && (
+          <WhatsAppBillingCard />
         )}
 
         {/* Connection Status */}

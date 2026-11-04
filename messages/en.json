@@ -2296,6 +2296,12 @@
         "activeMissingWarning": "The sending number is no longer listed under this account. Select a new active number below.",
         "syncSummary": "Found {numbers} number(s) across {wabas} WhatsApp business account(s)."
       },
+      "billing": {
+        "title": "Billing & payments (Meta)",
+        "help": "Message charges are billed by Meta, separately from your Ashwini subscription. Add a payment method or funds and pay your balance in Meta Business Suite.",
+        "button": "Open Meta Billing & Payments",
+        "accessNote": "You need admin or finance access to the Meta business account."
+      },
       "disconnect": {
         "button": "Disconnect",
         "confirmTitle": "Disconnect WhatsApp?",

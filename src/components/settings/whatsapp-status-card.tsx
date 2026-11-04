@@ -116,6 +116,9 @@ export function WhatsAppStatusCard({
         </p>
       </div>
 
+      {/* Meta billing lives in its own card below (WhatsAppBillingCard)
+          — one link only, built by the shared server-side helper. */}
+
       {/* Edge-case prompts from the catalog (migration 047). */}
       {numbers.length > 0 && live.length === 0 && (
         <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-600/40 bg-amber-950/30 p-3 text-sm text-amber-200">
