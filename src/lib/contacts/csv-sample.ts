@@ -23,3 +23,22 @@ export function buildSampleContactCsv(): string {
     ...SAMPLE_ROWS.map((row) => row.join(',')),
   ].join('\n');
 }
+
+/**
+ * Hand the sample file to the browser as a download. Client-only —
+ * same blob-and-link mechanics the broadcast wizard's step 2 uses, so
+ * any page offering "Download Sample CSV" gives out the identical file.
+ */
+export function downloadSampleContactCsv(): void {
+  const blob = new Blob([buildSampleContactCsv()], {
+    type: 'text/csv;charset=utf-8;',
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'contacts-sample.csv';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}

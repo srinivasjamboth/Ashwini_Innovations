@@ -13,10 +13,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Radio, Plus, Loader2 } from 'lucide-react';
+import { Radio, Plus, Loader2, Download } from 'lucide-react';
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { getBroadcastStatus } from '@/lib/broadcast-status';
+import { downloadSampleContactCsv } from '@/lib/contacts/csv-sample';
 import { useTranslations } from 'next-intl';
 
 /**
@@ -61,6 +62,9 @@ export default function BroadcastsPage() {
   const router = useRouter();
   const t = useTranslations('Broadcasts.page');
   const tStatus = useTranslations('Broadcasts.status');
+  // Reuse the wizard's existing "Download Sample CSV" label — same
+  // action, same wording, no duplicate translation key.
+  const tWizard = useTranslations('Broadcasts.wizard');
   const canCreate = useCan('send-messages');
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [loading, setLoading] = useState(true);
@@ -187,15 +191,26 @@ export default function BroadcastsPage() {
             {t('subtitle')}
           </p>
         </div>
-        <GatedButton
-          canAct={canCreate}
-          gateReason="create broadcasts" planFeature="bulk_messages"
-          onClick={() => router.push('/broadcasts/new')}
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
-        >
-          <Plus className="h-4 w-4" />
-          {t('newBroadcast')}
-        </GatedButton>
+        <div className="flex items-center gap-4">
+          {/* Same sample file the CSV-audience step offers in the wizard. */}
+          <button
+            type="button"
+            onClick={downloadSampleContactCsv}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+          >
+            <Download className="h-3.5 w-3.5" />
+            {tWizard('selectAudience.downloadSampleCsv')}
+          </button>
+          <GatedButton
+            canAct={canCreate}
+            gateReason="create broadcasts" planFeature="bulk_messages"
+            onClick={() => router.push('/broadcasts/new')}
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            <Plus className="h-4 w-4" />
+            {t('newBroadcast')}
+          </GatedButton>
+        </div>
       </div>
 
       {broadcasts.length === 0 ? (
