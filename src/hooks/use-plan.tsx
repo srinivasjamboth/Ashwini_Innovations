@@ -14,9 +14,21 @@
 // Two responsibilities:
 //   1. Expose plan state + two derived helpers the UI branches on:
 //        isFeatureAllowed(flag) and remaining(feature).
-//   2. Own the shared upgrade/renew modal. A structured 403 anywhere in
-//      the app (see `reportPlanDenial`) opens it; so does an expired
-//      account's banner. This keeps ONE modal instead of a per-page copy.
+//   2. Own the shared upgrade surface. A structured 403 anywhere in
+//      the app (see `reportPlanDenial`) opens the picker; so does an expired
+//      account's banner. This keeps ONE surface instead of a per-page copy.
+//
+// That surface has two stages, and the provider owns the handoff between them:
+//   · <UpgradeModal> — the plan picker;
+//   · <CheckoutScrollOverlay> — the pricing section's animated billing scroller,
+//     opened in place for the plan the picker sold. The provider rather than the
+//     picker holds it because both ways out are provider state: dismissing it
+//     reopens the picker with the denial that raised it (`openUpgrade`), and
+//     paying in it closes it and re-reads entitlements (`load`) so the new plan's
+//     gates lift WITHOUT navigating anywhere — the customer stays on the page
+//     they renewed from. The picker never has to ask its own context to re-open
+//     itself, and nothing here changes the landing's or /checkout's copy of the
+//     same two components.
 //
 // UI gating fails OPEN while loading — the authoritative check is the
 // backend 403, and we don't want a flash of disabled buttons on every
@@ -33,6 +45,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import dynamic from "next/dynamic";
 
 import { useAuth } from "@/hooks/use-auth";
 import type {
@@ -45,7 +58,26 @@ import type {
 } from "@/lib/plans/types";
 import type { FeatureFlag, LimitFeature } from "@/lib/plans/config";
 import { UNLIMITED } from "@/lib/plans/config";
-import { UpgradeModal, type UpgradeContext } from "@/components/plans/upgrade-modal";
+import { UpgradeModal, type BillingPick, type UpgradeContext } from "@/components/plans/upgrade-modal";
+
+// Loaded on demand, exactly as the pricing section loads it: the scroller
+// portals to document.body and owns framer-motion motion values, neither of
+// which has anything to render on the server — and this provider is mounted on
+// every dashboard route, so its (scoped) stylesheet must only ship to a customer
+// who actually opened a checkout.
+const CheckoutScrollOverlay = dynamic(
+  () =>
+    import("@/components/plans/checkout-scroll-overlay").then(
+      (mod) => mod.CheckoutScrollOverlay
+    ),
+  { ssr: false }
+);
+
+// The picker's exit animation is `duration-100` on DialogContent, and until it
+// unmounts the modal still holds the page's click and scroll locks — a layer
+// opened inside that window is unclickable. So the scroller opens just after the
+// handoff, which is short enough to read as one continuous gesture.
+const PICKER_HANDOFF_MS = 150;
 
 /** The exact JSON shape returned by GET /api/billing/entitlements. */
 interface EntitlementsSnapshot {
@@ -132,6 +164,13 @@ export function PlanProvider({ children }: { children: ReactNode }) {
   const [upgrade, setUpgrade] = useState<{ open: boolean; ctx?: UpgradeContext }>({
     open: false,
   });
+  // The billing scroller raised from the picker. It carries the context the
+  // picker was opened with, because `closeUpgrade` clears it and dismissing the
+  // scroller has to restore the heading and the denial message.
+  const [billing, setBilling] = useState<
+    (BillingPick & { ctx?: UpgradeContext }) | null
+  >(null);
+  const handoffRef = useRef<number | null>(null);
   // Guards against an out-of-order response overwriting a newer one
   // (e.g. a refresh racing the initial load).
   const reqIdRef = useRef(0);
@@ -182,6 +221,49 @@ export function PlanProvider({ children }: { children: ReactNode }) {
   }, []);
   const closeUpgrade = useCallback(() => setUpgrade({ open: false }), []);
 
+  // Stage two of the upgrade surface: the picker sold a plan, so close it and
+  // open the billing scroller over the same page. Nothing is bought here — the
+  // scroller's <CheckoutPanel> runs the one shared checkout, and the server
+  // still decides the price and the activation.
+  const openBilling = useCallback(
+    (pick: BillingPick) => {
+      const ctx = upgrade.ctx;
+      setUpgrade({ open: false });
+      if (handoffRef.current) window.clearTimeout(handoffRef.current);
+      handoffRef.current = window.setTimeout(() => {
+        handoffRef.current = null;
+        setBilling({ ...pick, ctx });
+      }, PICKER_HANDOFF_MS);
+    },
+    [upgrade.ctx]
+  );
+
+  // Paid, or dismissed. Both close the scroller; only the dismissal reopens the
+  // picker, and neither navigates — the customer is left on the page they were
+  // already on.
+  const closeBilling = useCallback(() => {
+    const ctx = billing?.ctx;
+    setBilling(null);
+    setUpgrade({ open: true, ctx });
+  }, [billing?.ctx]);
+
+  // A completed payment changes what the account is allowed to do, so the
+  // snapshot is re-read right here — the same call the context exposes as
+  // `refresh` — instead of sending the customer to a billing tab to discover it.
+  const paidBilling = useCallback(() => {
+    setBilling(null);
+    void load();
+  }, [load]);
+
+  // A handoff still in flight must not open a scroller over a page the user has
+  // already left.
+  useEffect(
+    () => () => {
+      if (handoffRef.current) window.clearTimeout(handoffRef.current);
+    },
+    []
+  );
+
   // Any call-site (or a background 403) can raise the modal via the event.
   useEffect(() => {
     const onDenial = (e: Event) => {
@@ -231,8 +313,23 @@ export function PlanProvider({ children }: { children: ReactNode }) {
         open={upgrade.open}
         ctx={upgrade.ctx}
         onClose={closeUpgrade}
-        onRenewed={() => void load()}
+        onPick={openBilling}
       />
+      {/* Billing in place — the pricing section's animated scroller, the same
+          <CheckoutPanel> `/checkout` renders. It portals to document.body, so
+          its place in this tree only decides when it exists. `backLabel` comes
+          from the picker (it owns the wording), `onClose` returns to the picker
+          and `onPaid` ends the flow on this page. */}
+      {billing && (
+        <CheckoutScrollOverlay
+          planId={billing.planId}
+          planName={billing.planName}
+          cycle={billing.cycle}
+          backLabel={billing.backLabel}
+          onClose={closeBilling}
+          onPaid={paidBilling}
+        />
+      )}
     </PlanContext.Provider>
   );
 }

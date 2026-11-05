@@ -1,0 +1,486 @@
+/* ============================================================
+   billing-scroller.css — the pricing section's billing UI, made to render
+   outside the marketing routes.
+
+   WHY THIS FILE EXISTS. <CheckoutPanel> and <CheckoutScrollOverlay> are built
+   from Bootstrap 5 + the landing template's `style.css` (`row`, `col-lg-7`,
+   `d-flex`, `btn btn-primary-gradient`, `text-primary-gradient`, `bg-light`,
+   `text-muted`…). Those stylesheets are imported by the `(marketing)`,
+   `(checkout)` and `(legal)` layouts only, so on a dashboard route the billing
+   markup would render as an unstyled column of text. The account's "Renew /
+   Change plan" flow now opens that same billing UI in place, so the classes it
+   actually uses are restated here — and every single one is scoped under
+   `.billing-scroller`, which the overlay puts on its own portal root.
+
+   NOTHING HERE IS GLOBAL. That is the whole design: importing Bootstrap into
+   the dashboard would restyle buttons, forms and typography across the app, so
+   instead the handful of utilities the billing UI uses are repeated with the
+   values the shipped build produces. Read the two files above and you will find
+   the declarations copied verbatim, `!important` included — Bootstrap marks its
+   utilities `!important`, and several of them (`.p-4` = 1.5rem, `.pt-3` = 1rem,
+   `.mb-3` = 1rem) do NOT match Tailwind's scale, so on the landing they already
+   win over Tailwind's own `p-4`/`pt-3`/`mb-3`. Repeating the values keeps the
+   two surfaces pixel-aligned instead of quietly differing by a quarter rem.
+
+   ON THE MARKETING ROUTES THIS FILE IS A NO-OP: the same declarations, the same
+   values, and Bootstrap's own unscoped `!important` utilities still win the
+   cascade anyway. It only becomes load-bearing where Bootstrap is absent.
+
+   Dark mode: none. The scroller card is `bg-white` in both themes (see the
+   overlay), because Bootstrap's billing text is measured for contrast on white,
+   so the surfaces below are the light ones on purpose.
+   ============================================================ */
+
+.billing-scroller {
+  /* The brand palette, declared once in the template's :root and read by the
+     gradient/text utilities below. Local to the scroller so nothing leaks. */
+  --primary: #1d6fb8;
+  --secondary: #165a96;
+  --light: #eaf4ff;
+  --body: #25415f;
+
+  /* Reboot's body contract, which Bootstrap normally inherits from <body>.
+     The font stack is deliberately NOT restated: style.css already moves the
+     page onto the app's own `--font-sans`, which the dashboard uses too. */
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--body);
+}
+
+/* ---- reboot: paragraphs, headings, lists, rules ---------------------- */
+
+.billing-scroller p {
+  margin-top: 0;
+  margin-bottom: 1rem;
+}
+
+.billing-scroller h1,
+.billing-scroller h2,
+.billing-scroller h3,
+.billing-scroller h4,
+.billing-scroller h5,
+.billing-scroller h6 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  font-family: 'Jost', sans-serif; /* not loaded: falls back exactly as on the landing */
+  font-weight: 500;
+  line-height: 1.2;
+  color: #262b47;
+}
+
+.billing-scroller h1 {
+  font-size: calc(1.375rem + 1.5vw);
+}
+.billing-scroller h2 {
+  font-size: calc(1.325rem + 0.9vw);
+}
+.billing-scroller h4 {
+  font-size: calc(1.275rem + 0.3vw);
+}
+.billing-scroller h5 {
+  font-size: 1.25rem;
+}
+
+/* The template's own heading weights, which load AFTER Bootstrap. */
+.billing-scroller h1,
+.billing-scroller h2,
+.billing-scroller .fw-bold {
+  font-weight: 700 !important;
+}
+.billing-scroller h3,
+.billing-scroller h4 {
+  font-weight: 600 !important;
+}
+.billing-scroller h5,
+.billing-scroller h6,
+.billing-scroller .fw-medium {
+  font-weight: 500 !important;
+}
+
+.billing-scroller ul,
+.billing-scroller ol {
+  margin-top: 0;
+  margin-bottom: 1rem;
+  padding-left: 2rem;
+}
+
+.billing-scroller hr {
+  margin: 1rem 0;
+  color: inherit;
+  background-color: currentColor;
+  border: 0;
+  opacity: 0.25;
+}
+
+/* ---- flex / grid ----------------------------------------------------- */
+
+.billing-scroller .row {
+  --bs-gutter-x: 1.5rem;
+  --bs-gutter-y: 0;
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: calc(var(--bs-gutter-y) * -1);
+  margin-right: calc(var(--bs-gutter-x) / -2);
+  margin-left: calc(var(--bs-gutter-x) / -2);
+}
+
+.billing-scroller .row > * {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 100%;
+  padding-right: calc(var(--bs-gutter-x) / 2);
+  padding-left: calc(var(--bs-gutter-x) / 2);
+  margin-top: var(--bs-gutter-y);
+}
+
+.billing-scroller .g-4 {
+  --bs-gutter-x: 1.5rem;
+  --bs-gutter-y: 1.5rem;
+}
+
+.billing-scroller .d-flex {
+  display: flex !important;
+}
+.billing-scroller .d-inline-flex {
+  display: inline-flex !important;
+}
+.billing-scroller .flex-shrink-0 {
+  flex-shrink: 0 !important;
+}
+.billing-scroller .align-items-start {
+  align-items: flex-start !important;
+}
+.billing-scroller .align-items-center {
+  align-items: center !important;
+}
+.billing-scroller .align-items-baseline {
+  align-items: baseline !important;
+}
+.billing-scroller .justify-content-between {
+  justify-content: space-between !important;
+}
+.billing-scroller .justify-content-center {
+  justify-content: center !important;
+}
+.billing-scroller .gap-2 {
+  gap: 0.5rem !important;
+}
+.billing-scroller .gap-3 {
+  gap: 1rem !important;
+}
+
+/* Bootstrap's lg breakpoint, same as the shipped build. */
+@media (min-width: 992px) {
+  .billing-scroller .col-lg-7 {
+    flex: 0 0 auto;
+    width: 58.33333%;
+  }
+  .billing-scroller .col-lg-5 {
+    flex: 0 0 auto;
+    width: 41.66667%;
+  }
+  .billing-scroller .g-lg-5 {
+    --bs-gutter-x: 3rem;
+    --bs-gutter-y: 3rem;
+  }
+}
+
+/* ---- sizing, colour, text -------------------------------------------- */
+
+.billing-scroller .w-100 {
+  width: 100% !important;
+}
+.billing-scroller .h-auto {
+  height: auto !important;
+}
+.billing-scroller .mx-auto {
+  margin-right: auto !important;
+  margin-left: auto !important;
+}
+.billing-scroller .overflow-auto {
+  overflow: auto !important;
+}
+.billing-scroller .overflow-hidden {
+  overflow: hidden !important;
+}
+.billing-scroller .text-end {
+  text-align: right !important;
+}
+.billing-scroller .text-center {
+  text-align: center !important;
+}
+.billing-scroller .text-capitalize {
+  text-transform: capitalize !important;
+}
+.billing-scroller .text-muted {
+  color: #6c757d !important;
+}
+/* style.css pins .text-primary to the brand blue (Bootstrap compiled it as
+   #4294E3), so the panel's check icons land on the same blue as the dialog. */
+.billing-scroller .text-primary {
+  color: var(--primary) !important;
+}
+.billing-scroller .text-white {
+  color: #fff !important;
+}
+.billing-scroller .text-white-50 {
+  color: rgba(255, 255, 255, 0.5) !important;
+}
+.billing-scroller .fs-4 {
+  font-size: calc(1.275rem + 0.3vw) !important;
+}
+.billing-scroller .fs-5 {
+  font-size: 1.25rem !important;
+}
+@media (min-width: 1200px) {
+  .billing-scroller .fs-4 {
+    font-size: 1.5rem !important;
+  }
+  .billing-scroller h1 {
+    font-size: 2.5rem;
+  }
+  .billing-scroller h4 {
+    font-size: 1.5rem;
+  }
+}
+
+/* ---- borders, radii, surfaces ---------------------------------------- */
+
+.billing-scroller .border {
+  border: 1px solid #dee2e6 !important;
+}
+.billing-scroller .border-top {
+  border-top: 1px solid #dee2e6 !important;
+}
+.billing-scroller .border-bottom {
+  border-bottom: 1px solid #dee2e6 !important;
+}
+.billing-scroller .rounded {
+  border-radius: 10px !important;
+}
+.billing-scroller .rounded-3 {
+  border-radius: 0.3rem !important;
+}
+.billing-scroller .rounded-pill {
+  border-radius: 50rem !important;
+}
+.billing-scroller .rounded-circle {
+  border-radius: 50% !important;
+}
+/* Bootstrap shipped #F0F6FF; style.css re-pins it to the light blue wash. */
+.billing-scroller .bg-light {
+  background-color: var(--light) !important;
+}
+.billing-scroller .bg-white {
+  background-color: #fff !important;
+}
+.billing-scroller .list-unstyled {
+  padding-left: 0;
+  list-style: none;
+}
+
+/* ---- spacing (Bootstrap's scale, not Tailwind's) ---------------------- */
+
+.billing-scroller .mb-0 {
+  margin-bottom: 0 !important;
+}
+.billing-scroller .mb-1 {
+  margin-bottom: 0.25rem !important;
+}
+.billing-scroller .mb-2 {
+  margin-bottom: 0.5rem !important;
+}
+.billing-scroller .mb-3 {
+  margin-bottom: 1rem !important;
+}
+.billing-scroller .mb-4 {
+  margin-bottom: 1.5rem !important;
+}
+.billing-scroller .mt-0 {
+  margin-top: 0 !important;
+}
+.billing-scroller .mt-2 {
+  margin-top: 0.5rem !important;
+}
+.billing-scroller .mt-3 {
+  margin-top: 1rem !important;
+}
+.billing-scroller .mt-4 {
+  margin-top: 1.5rem !important;
+}
+.billing-scroller .my-3 {
+  margin-top: 1rem !important;
+  margin-bottom: 1rem !important;
+}
+.billing-scroller .ms-2 {
+  margin-left: 0.5rem !important;
+}
+.billing-scroller .p-2 {
+  padding: 0.5rem !important;
+}
+.billing-scroller .p-4 {
+  padding: 1.5rem !important;
+}
+.billing-scroller .px-3 {
+  padding-right: 1rem !important;
+  padding-left: 1rem !important;
+}
+.billing-scroller .px-4 {
+  padding-right: 1.5rem !important;
+  padding-left: 1.5rem !important;
+}
+.billing-scroller .py-2 {
+  padding-top: 0.5rem !important;
+  padding-bottom: 0.5rem !important;
+}
+.billing-scroller .py-5 {
+  padding-top: 3rem !important;
+  padding-bottom: 3rem !important;
+}
+.billing-scroller .pt-1 {
+  padding-top: 0.25rem !important;
+}
+.billing-scroller .pt-3 {
+  padding-top: 1rem !important;
+}
+.billing-scroller .pt-4 {
+  padding-top: 1.5rem !important;
+}
+.billing-scroller .pb-1 {
+  padding-bottom: 0.25rem !important;
+}
+.billing-scroller .pb-2 {
+  padding-bottom: 0.5rem !important;
+}
+
+/* ---- buttons ---------------------------------------------------------- */
+
+/* Bootstrap's `.btn` base, with the template's `.btn { transition: .5s }`
+   already folded in — style.css loads after Bootstrap, so .5s is what the
+   landing actually renders. */
+.billing-scroller .btn {
+  display: inline-block;
+  font-weight: 400;
+  line-height: 1.5;
+  color: #919294;
+  text-align: center;
+  vertical-align: middle;
+  cursor: pointer;
+  user-select: none;
+  background-color: transparent;
+  border: 1px solid transparent;
+  padding: 0.375rem 0.75rem;
+  font-size: 1rem;
+  border-radius: 10px;
+  transition: 0.5s;
+}
+
+.billing-scroller .btn:hover {
+  color: #919294;
+}
+
+.billing-scroller .btn:focus {
+  outline: 0;
+  box-shadow: 0 0 0 0.25rem rgba(66, 148, 227, 0.25);
+}
+
+.billing-scroller .btn:disabled,
+.billing-scroller .btn.disabled {
+  pointer-events: none;
+  opacity: 0.65;
+}
+
+/* The dark-framed chrome's own controls (Back / Close) sit on the backdrop. */
+.billing-scroller .btn-outline-light {
+  color: #f0f6ff;
+  border-color: #f0f6ff;
+}
+.billing-scroller .btn-outline-light:hover {
+  color: #000;
+  background-color: #f0f6ff;
+  border-color: #f0f6ff;
+}
+.billing-scroller .btn-outline-light:focus {
+  box-shadow: 0 0 0 0.25rem rgba(240, 246, 255, 0.5);
+}
+
+/* The gradient pill the pay button and the fallback CTA use. Bootstrap's
+   variants are keyed on `.btn.<variant>`, so the pairing is kept here too. */
+.billing-scroller .btn.btn-primary-gradient {
+  position: relative;
+  overflow: hidden;
+  border: none;
+  color: #fff;
+  z-index: 1;
+  background: linear-gradient(to bottom right, var(--primary), var(--secondary));
+}
+
+.billing-scroller .btn.btn-primary-gradient::after {
+  position: absolute;
+  content: '';
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  opacity: 0;
+  transition: 0.5s;
+  background: linear-gradient(to bottom right, var(--secondary), var(--primary));
+}
+
+.billing-scroller .btn.btn-primary-gradient:hover::after {
+  opacity: 1;
+}
+
+.billing-scroller .btn.btn-outline-blue {
+  background: #fff;
+  border: 1px solid var(--primary);
+  color: var(--primary);
+}
+
+.billing-scroller .btn.btn-outline-blue:hover {
+  background: var(--light);
+  color: var(--secondary);
+  border-color: var(--secondary);
+}
+
+/* Gradient TEXT: the eyebrow above the plan name and the "Billing" label. */
+.billing-scroller .text-primary-gradient {
+  background: linear-gradient(to bottom right, var(--primary), var(--secondary));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Keyboard focus on the light surface, as the template draws it. */
+.billing-scroller a:focus-visible,
+.billing-scroller button:focus-visible {
+  outline: 3px solid rgba(29, 111, 184, 0.35);
+  outline-offset: 2px;
+}
+
+/* ---- the layer itself -------------------------------------------------- */
+
+/* Everything above is a DESCENDANT selector, so it would miss the classes the
+   overlay carries on the same element that carries `.billing-scroller` — its
+   portal root: `px-3 pt-3 pb-2 overflow-hidden`. Listed again for the self case.
+
+   They matter because Bootstrap's utilities are `!important` and Tailwind's are
+   not, so on the landing the root's `md:px-8 md:pt-4 md:pb-2` are dead letters
+   and the effective padding is 1rem / 1rem / .5rem at every width. Repeating
+   the `!important` here reproduces that instead of quietly giving the dashboard
+   version wider chrome — which would shrink the card, and change where its
+   content breaks, on the in-account surface only. */
+.billing-scroller.px-3 {
+  padding-right: 1rem !important;
+  padding-left: 1rem !important;
+}
+.billing-scroller.pt-3 {
+  padding-top: 1rem !important;
+}
+.billing-scroller.pb-2 {
+  padding-bottom: 0.5rem !important;
+}
+.billing-scroller.overflow-hidden {
+  overflow: hidden !important;
+}

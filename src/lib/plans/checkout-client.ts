@@ -3,13 +3,16 @@
 // ============================================================
 // startCheckout — the ONE client-side checkout flow (spec PART 4).
 //
-// Every Subscribe / Upgrade / Switch-to-yearly / Renew button in the app
-// routes through `runCheckout` here, so the create-order → open-sheet →
-// verify → poll logic exists exactly once and can never diverge between the
-// pricing page, the upgrade modal and the billing tab.
+// Every payment in the app routes through `runCheckout` here, so the
+// create-order → open-sheet → verify → poll logic exists exactly once and can
+// never diverge between the pricing page, its billing scroller and the
+// `/checkout` route — all three are the ONE shared <CheckoutPanel>. The
+// dashboard's plan picker opens that same scroller in place, so it runs through
+// this too, on the same terms.
 //
-// It is deliberately framework-free (no React) so a hook can own UI state
-// around it. `useCheckout` wraps this and exposes phase + a refresh.
+// It is deliberately framework-free (no React): the UI state around a payment
+// (paying / note / the auth reveal) belongs to the surface rendering it, which
+// today is <CheckoutPanel>.
 //
 // Trust model mirrored on the client (the real guarantees are server-side):
 //   · the client sends ONLY { plan_key, billing_cycle } — never an amount.

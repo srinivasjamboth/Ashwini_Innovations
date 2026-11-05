@@ -8,12 +8,17 @@
 // NOTHING about the payment flow changed here: same public catalog
 // fetch, same "never advertise a checkout that cannot complete" cycle
 // fallback, same `runCheckout` (create/reuse order at the STORED price →
-// gateway sheet → server verify → poll), same success target
-// (/settings?tab=billing), same in-place auth reveal for a visitor with
-// no account yet. Only the page container and its "Back to pricing" link
-// stayed behind in the route, because those are chrome, not billing: the
-// caller decides how the panel is framed (a page column, or the scroll
-// card) and passes `className` for the grid.
+// gateway sheet → server verify → poll), same in-place auth reveal for a
+// visitor with no account yet. Only the page container and its "Back to
+// pricing" link stayed behind in the route, because those are chrome, not
+// billing: the caller decides how the panel is framed (a page column, or the
+// scroll card) and passes `className` for the grid.
+//
+// Two OPTIONAL props exist because a second host now reuses this panel: the
+// account's "Renew / Change plan" scroller opens it over the page the customer
+// is already on. Such a host owns the exit (`onPaid`) and the wording of the
+// escape hatch (`backLabel`). Both default to the landing/page behaviour, so
+// `/checkout` and the pricing section render and navigate exactly as before.
 // ============================================================
 
 import {
@@ -102,6 +107,18 @@ export interface CheckoutPanelProps {
    *  (which would leave the panel sitting open over the pricing grid).
    *  Omitted on `/checkout`, which keeps its real link. */
   onBackToPricing?: () => void;
+  /**
+   * Given by a host that keeps the customer where they are: called INSTEAD of
+   * the default `router.push('/settings?tab=billing')` once the gateway has
+   * confirmed. The account's in-place billing scroller uses it, because after a
+   * renew done from the dashboard being sent to a billing tab is a navigation
+   * the customer did not ask for. Omitted on `/checkout` and on the pricing
+   * section, which keep the push.
+   */
+  onPaid?: () => void;
+  /** Wording of the escape hatch shown when the plan cannot be found. Defaults
+   *  to the landing's, which is the only host that navigates to pricing. */
+  backLabel?: string;
 }
 
 export function CheckoutPanel({
@@ -110,6 +127,8 @@ export function CheckoutPanel({
   className,
   stickySummary,
   onBackToPricing,
+  onPaid,
+  backLabel = 'Back to pricing',
 }: CheckoutPanelProps) {
   const router = useRouter();
 
@@ -167,6 +186,12 @@ export function CheckoutPanel({
       const outcome = await runCheckout(plan.id, shownCycle);
       switch (outcome.status) {
         case 'success':
+          if (onPaid) {
+            // In-place host: it closes the panel and re-reads entitlements on
+            // the current page. No navigation, so the customer never leaves.
+            onPaid();
+            break;
+          }
           // Real billing tab, now that the visitor holds a paid session.
           router.push('/settings?tab=billing');
           break;
@@ -195,7 +220,7 @@ export function CheckoutPanel({
     } finally {
       setPaying(false);
     }
-  }, [plan, shownCycle, router]);
+  }, [plan, shownCycle, router, onPaid]);
 
   // ---- loading / error / invalid states ------------------------------
 
@@ -232,14 +257,14 @@ export function CheckoutPanel({
             onClick={onBackToPricing}
             className="btn btn-primary-gradient rounded-pill px-4 py-2"
           >
-            Back to pricing
+            {backLabel}
           </button>
         ) : (
           <Link
             href="/#pricing"
             className="btn btn-primary-gradient rounded-pill px-4 py-2"
           >
-            Back to pricing
+            {backLabel}
           </Link>
         )}
       </CenterNotice>

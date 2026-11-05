@@ -24,15 +24,64 @@
 //   · while a PAID yearly period runs, a downgrade (cheaper plan, or back
 //     to monthly) is refused with "Your yearly plan runs until <date>" —
 //     the same rule the checkout route enforces server-side;
-//   · checkout calls the ONE shared `startCheckout` (Orders model, UPI-ready):
-//     the server creates/reuses an order at the STORED price, opens
-//     checkout.js, and activation still only happens on the verified
-//     signature + gateway confirmation (or the webhook), so this dialog
-//     never claims a plan the gateway has not confirmed.
+//   · a plan button does not pay in this dialog. It hands the pick up to the
+//     provider that renders it (`onPick`), which opens the pricing section's
+//     animated billing scroller — <CheckoutScrollOverlay> over <CheckoutPanel>,
+//     the ONE billing UI `/checkout` renders too (Orders model, UPI-ready) — IN
+//     PLACE, over the page the customer is already on. The server creates/reuses
+//     an order at the STORED price, opens checkout.js, verifies the signature +
+//     gateway confirmation, and only then activates (or the webhook does), so this
+//     dialog never claims a plan the gateway has not confirmed — and the app
+//     cannot offer two different billings. Back from the scroller returns here; a
+//     paid scroller closes and re-reads entitlements on the same page, so the new
+//     plan's limits lift without a navigation. `/checkout?plan=&cycle=` keeps
+//     serving middle-click, a shared link, a no-JS visit and the post-login
+//     redirect exactly as before.
+//
+// LAYOUT — why it used to look broken. Three faults stacked, each one
+// measured rather than guessed:
+//   1. The dialog was never as wide as it looked in the code. `DialogContent`
+//      carries `sm:max-w-sm` in its own base classes, and tailwind-merge keeps
+//      a plain `max-w-3xl` and a `sm:`-prefixed `sm:max-w-sm` as two different
+//      modifier groups — so the old `max-w-3xl` did NOT replace it, and from
+//      640px up the dialog was actually 384px (verified by printing the merged
+//      class list).
+//   2. `lg:grid-cols-4` is a VIEWPORT breakpoint, not a container one, so a
+//      1024px screen asked those 384px for four columns: ~86px each. Every
+//      label wrapped mid-phrase and every figure collided with it.
+//   3. Then it spilled sideways, because a grid item's default `min-width` is
+//      `auto` — one string that refuses to wrap (the Button base is
+//      `whitespace-nowrap`, and the yearly-unavailable state put the whole
+//      sentence "Yearly billing is not available for this plan yet" IN the
+//      label) widened its track past the dialog, producing a horizontal
+//      scrollbar inside the vertical one.
+// The fix is all three: the dialog overrides the same modifier it is fighting
+// (`sm:max-w-[min(76rem,calc(100vw-2rem))]`, which twMerge does drop the base
+// `sm:max-w-sm` for — also verified), the columns are `sm:2 / xl:4` so four
+// side by side only happens when the dialog is genuinely ~1200px wide, and
+// every card is `min-w-0` with `whitespace-normal` on the CTA so nothing can
+// widen a track again.
+//
+// The organisation is the enterprise one: fixed header, scrolling body, fixed
+// note bar; one card shape with the title block, price, figure list and CTA
+// each at the same height on every plan; every row label-left / value-right on
+// one baseline with tabular figures, so the columns of numbers actually line up
+// across the four cards.
+//
+// COLOURS: the pricing section's palette, repeated as literal values rather
+// than imported. `.text-primary-gradient` / `.bg-primary-gradient` live in
+// `src/app/(marketing)/template/style.css`, which only the marketing, checkout
+// and legal layouts mount — on a dashboard route those classes do not exist.
+// `(auth)/auth-shell.css` sets this precedent already ("the values are repeated
+// here rather than imported"). Nothing global is added, so no other component
+// can pick these up, and every surface still reads from the theme tokens
+// (`bg-popover`, `border-border`, `text-muted-foreground`) so dark mode and the
+// accent themes keep working.
 // ============================================================
 
 import { useEffect, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
+import { Check } from "lucide-react";
 
 import {
   Dialog,
@@ -42,14 +91,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import { formatCount, formatCurrency } from "@/lib/currency";
 import { UNLIMITED, type FeatureFlag, type LimitFeature } from "@/lib/plans/config";
 import { cardLimits, cardLimitPeriods, type PlanCard } from "@/lib/plans/catalog";
 import type { BillingCycle, EnforcementResult } from "@/lib/plans/types";
-import type { CheckoutOutcome } from "@/lib/plans/checkout-client";
 import { usePlan } from "@/hooks/use-plan";
-import { useCheckout } from "@/hooks/use-checkout";
 
 export interface UpgradeContext {
   /** The denial that opened the modal, if any. */
@@ -62,13 +109,31 @@ export interface UpgradeContext {
   flag?: string;
 }
 
+/**
+ * What a plan button hands to the provider that renders this dialog: the pick,
+ * plus the wording the scroller should use for the way back here. The provider
+ * owns the scroller (see `use-plan`), so this is the whole contract between the
+ * two stages of the upgrade surface.
+ */
+export interface BillingPick {
+  planId: string;
+  planName: string;
+  /** The cycle this CARD sold, so a plan without a yearly offer is never asked
+   *  for a checkout that cannot complete. */
+  cycle: BillingCycle;
+  backLabel: string;
+}
+
 interface UpgradeModalProps {
   open: boolean;
   ctx?: UpgradeContext;
   onClose: () => void;
-  /** Called after a successful renewal so the snapshot lifts
-   *  immediately (spec PART 3: no re-login / refresh). */
-  onRenewed: () => void;
+  /** A paid plan was clicked: raise the billing scroller for it. */
+  onPick: (pick: BillingPick) => void;
+  // Deliberately no "renewed" callback: the scroller's host (the provider) is
+  // the one that re-reads entitlements when the gateway confirms, so neither
+  // this dialog nor the customer has to do anything for the new plan's gates to
+  // lift — spec PART 3 still holds.
 }
 
 // Feature display names, resolved through the Plans namespace so every
@@ -88,19 +153,33 @@ const FEATURE_KEYS: FeatureFlag[] = [
   "ai_agent",
 ];
 
-export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProps) {
+// The pricing section's blue, taken from the palette the template declares once
+// in :root: --primary #1d6fb8 into --secondary #165a96, --light #eaf4ff for the
+// card wash, --dark #0b2a4a for ink. Complete literal class strings, because
+// Tailwind scans source text — a constant is detected exactly as an inline
+// class would be.
+const BRAND_GRADIENT =
+  "[background-image:linear-gradient(to_bottom_right,#1d6fb8,#165a96)]";
+// A gradient FILL keeps the same stops in both modes: white measures 5.2:1 on
+// #1d6fb8 and 7.2:1 on #165a96, the AA+ the landing documents. Gradient TEXT has
+// to invert, because #1d6fb8 on a dark surface is not enough contrast — the
+// dark pair is the same hue, lifted.
+const BRAND_GRADIENT_TEXT = cn(
+  BRAND_GRADIENT,
+  "bg-clip-text text-transparent",
+  "dark:[background-image:linear-gradient(to_bottom_right,#7cb8e8,#4f9bd6)]"
+);
+const BRAND_WASH = "bg-[#eaf4ff] dark:bg-[#132437]";
+const BRAND_ACCENT = "text-[#165a96] dark:text-[#7cb8e8]";
+
+export function UpgradeModal({ open, ctx, onClose, onPick }: UpgradeModalProps) {
   const t = useTranslations("Plans");
   const { snapshot } = usePlan();
   const [plans, setPlans] = useState<PlanCard[] | null>(null);
   const [loadErr, setLoadErr] = useState(false);
   const [cycle, setCycle] = useState<BillingCycle>(snapshot?.cycle ?? "monthly");
   const [yearlyOn, setYearlyOn] = useState(true);
-  const [pendingPlan, setPendingPlan] = useState<string | null>(null);
   const [gatewayNote, setGatewayNote] = useState<string | null>(null);
-  // ONE shared Orders checkout flow (spec PART 4) — the same startCheckout
-  // the billing tab and landing surface use, so create-order → sheet →
-  // verify → poll logic can never diverge between them.
-  const { startCheckout, busy } = useCheckout();
 
   // Fetch the catalog lazily, only when the dialog opens, and keep it for
   // subsequent opens within the session (it changes only when the seed
@@ -198,227 +277,342 @@ export function UpgradeModal({ open, ctx, onClose, onRenewed }: UpgradeModalProp
       return { label: t("currentPlan"), disabled: true };
     }
 
-    // Yearly not on offer for THIS plan → say so, and do not start a
-    // checkout that cannot complete.
-    if (cycle === "yearly" && !plan.yearlyAvailable) {
-      return { label: t("yearlyUnavailable"), disabled: true, blocked: "unavailable" };
-    }
+    // Yearly not on offer for THIS plan → the button stays disabled, so a
+    // checkout that cannot complete still cannot start. The sentence that used
+    // to be the label now reads under the price, the way the pricing page shows
+    // it (visible on the card, never hidden in a tooltip).
+    const unavailable = cycle === "yearly" && !plan.yearlyAvailable;
 
     const wouldDowngrade =
       Boolean(yearlyLock) && (cycle === "monthly" || plan.sort < currentSort);
 
-    if (plan.id === currentPlan) {
-      if (snapshot?.effectiveStatus === "expired")
-        return { label: t("renew"), disabled: false };
-      if (wouldDowngrade) {
-        // Same plan, monthly after a paid year: blocked, but clickable so it
-        // can explain itself.
-        return { label: t("switchToMonthly"), disabled: false, blocked: "locked" };
+    // The verb this card sells, kept short on purpose: it sits on a button in a
+    // four-column card, where a long string wraps to three lines and — with the
+    // Button's own `whitespace-nowrap` — used to widen the whole column.
+    const action = (): string => {
+      if (plan.id !== currentPlan) {
+        return plan.sort > currentSort ? t("upgrade") : t("switchPlan");
       }
-      return { label: t("switchToYearly"), disabled: false };
+      if (snapshot?.effectiveStatus === "expired") return t("renew");
+      // Same plan, monthly after a paid year: blocked, but clickable so it
+      // can explain itself.
+      if (wouldDowngrade) return t("switchToMonthly");
+      return t("switchToYearly");
+    };
+
+    if (unavailable) {
+      return { label: action(), disabled: true, blocked: "unavailable" };
     }
 
-    if (wouldDowngrade)
-      return { label: plan.sort > currentSort ? t("upgrade") : t("switchPlan"), disabled: false, blocked: "locked" };
-
     return {
-      label: plan.sort > currentSort ? t("upgrade") : t("switchPlan"),
+      label: action(),
       disabled: false,
+      ...(wouldDowngrade ? { blocked: "locked" as const } : {}),
     };
   };
 
-  const choose = async (plan: PlanCard) => {
+  // Raise the billing scroller for the pick. Two cases are answered HERE instead
+  // of sent to a checkout the server would refuse anyway, because the card can
+  // say why better than an error on the next screen:
+  //   · the trial plan has nothing to buy (the banner / signup flow owns trial
+  //     start), so its CTA stays a plain close, not a fake success;
+  //   · a downgrade during a paid yearly period is refused with its date.
+  const choose = (plan: PlanCard, sellCycle: BillingCycle) => {
     if (!plan.isPaid) {
-      // Trial is granted automatically at signup; there is nothing to
-      // "buy", so a trial CTA here just closes the dialog (the banner /
-      // signup flow owns trial start). Kept as a no-op, not a fake success.
       onClose();
       return;
     }
   
-    // Explain the yearly lock before spending a network call on a checkout
-    // the server would refuse anyway.
+    // Explain the yearly lock before opening a billing sheet the server would
+    // refuse.
     const btn = buttonFor(plan);
     if (btn.blocked === "locked" && yearlyLock) {
       setGatewayNote(t("yearlyLocked", { date: fmtDate(yearlyLock) }));
       return;
     }
-  
-    setPendingPlan(plan.id);
-    setGatewayNote(t("confirming"));
-    try {
-      // The server creates/reuses the order at the STORED price, opens the
-      // UPI-first sheet, verifies the signature + gateway confirmation, and
-      // polls while a UPI settles. Success is only reported once the SERVER
-      // says the plan is paid — never from the browser's word.
-      const outcome = await startCheckout(plan.id, cycle);
-      setGatewayNote(describeOutcome(outcome));
-      if (outcome.status === "success") onClose();
-    } finally {
-      setPendingPlan(null);
-      // A confirmed activation already refreshed the snapshot inside
-      // useCheckout; this keeps the provider's gating in step for the other
-      // outcomes (retry, cancel) with no page reload.
-      onRenewed();
-    }
+
+    // The cycle bought is the one the CARD sold (a plan with no yearly offer was
+    // showing monthly figures), so the scroller is never asked for a checkout that
+    // cannot complete. It re-applies the same fallback and the server sets the
+    // price — nothing about the offer is trusted from here, and the pay flow stays
+    // in the one shared <CheckoutPanel>.
+    onPick({
+      planId: plan.id,
+      planName: plan.name,
+      cycle: sellCycle,
+      // The scroller's way out is this picker, so it advertises it with the
+      // title this dialog actually carries.
+      backLabel: t("browseTitle"),
+    });
   };
-  
-  // Map a checkout outcome to the dialog's one-line message. The copy keys
-  // all ship in the Plans namespace across the four locales.
-  function describeOutcome(o: CheckoutOutcome): string {
-    switch (o.status) {
-      case "success":
-        return t("paymentSuccess", {
-          plan: o.planName ?? "\u2014",
-          cycle: o.cycle === "yearly" ? t("yearly") : t("monthly"),
-          date: o.periodEnd ? fmtDate(o.periodEnd) : "\u2014",
-        });
-      case "failed":
-        return t("paymentNotCharged");
-      case "cancelled":
-        return t("checkoutClosed");
-      case "pending":
-        return o.message === "reconcile" && o.paymentId
-          ? t("paymentReconcile", { paymentId: o.paymentId })
-          : t("paymentReconcileNoId");
-      case "error":
-        return o.message;
-    }
-  }
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{heading}</DialogTitle>
-          <DialogDescription>{subline}</DialogDescription>
+      {/* Fixed header, scrolling body, fixed note bar. `gap-0`/`p-0` replace
+          DialogContent's own padding so the three bands run edge to edge and
+          only the cards move. */}
+      <DialogContent className="flex max-h-[min(90vh,46rem)] flex-col gap-0 overflow-hidden border-border/80 bg-popover p-0 text-popover-foreground sm:max-w-[min(76rem,calc(100vw-2rem))]">
+        <DialogHeader className="shrink-0 border-b border-border/70 px-5 pt-5 pb-4 sm:px-6">
+          {/* `pe-10` keeps the title clear of the dialog's own close button. */}
+          <DialogTitle className="pe-10 text-base leading-snug sm:text-lg">
+            {heading}
+          </DialogTitle>
+          <DialogDescription className="max-w-3xl pe-10">
+            {subline}
+          </DialogDescription>
+
+          <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-3">
+            {/* Monthly / Yearly — the pricing section's own control: its
+                gradient track with a pill sitting in it, so pricing reads
+                identically in-app and out. It follows the
+                YEARLY_BILLING_ENABLED flag only; a plan that cannot be bought
+                yearly yet is answered on its own card, not by hiding the
+                toggle. */}
+            {yearlyOn && (
+              <div
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full p-1",
+                  BRAND_GRADIENT
+                )}
+              >
+                {(["monthly", "yearly"] as BillingCycle[]).map((c) => {
+                  const active = c === cycle;
+                  return (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => {
+                        setCycle(c);
+                        // A message about the cycle you just left must not sit
+                        // on top of the one you are now looking at.
+                        setGatewayNote(null);
+                      }}
+                      aria-pressed={active}
+                      className={cn(
+                        "rounded-full px-4 py-1.5 text-xs font-semibold transition",
+                        active
+                          ? "bg-white text-[#165a96] shadow-sm dark:bg-[#0b2a4a] dark:text-[#cfe3fa]"
+                          : "text-white hover:bg-white/15"
+                      )}
+                    >
+                      {c === "monthly" ? t("monthly") : t("yearly")}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* What the account actually holds, so "Change plan" answers a
+                question instead of leaving it to memory. */}
+            {currentPlan && (
+              <p className="text-xs text-muted-foreground">
+                <span className="font-semibold text-foreground">
+                  {t("currentPlan")}
+                </span>{" "}
+                ·{" "}
+                {plans?.find((p) => p.id === currentPlan)?.name ?? currentPlan}
+                {snapshot?.cycle
+                  ? ` · ${snapshot.cycle === "yearly" ? t("yearly") : t("monthly")}`
+                  : ""}
+              </p>
+            )}
+          </div>
         </DialogHeader>
 
-        {/* Monthly / Yearly toggle — the same control the landing page
-            keeps, so pricing reads identically in-app and out. It follows the
-            YEARLY_BILLING_ENABLED flag only; a plan that cannot be bought
-            yearly yet is answered on its own card, not by hiding the
-            toggle. */}
-        {yearlyOn && (
-          <div className="inline-flex rounded-lg border border-border bg-muted p-1 text-sm">
-            {(["monthly", "yearly"] as BillingCycle[]).map((c) => (
-              <button
-                key={c}
-                type="button"
-                onClick={() => {
-                  setCycle(c);
-                  // A message about the cycle you just left must not sit on
-                  // top of the one you are now looking at.
-                  setGatewayNote(null);
-                }}
-                aria-pressed={c === cycle}
-                className={`rounded-md px-3 py-1 font-medium transition ${
-                  c === cycle
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {c === "monthly" ? t("monthly") : t("yearly")}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {loadErr ? (
-          <p className="text-sm text-muted-foreground">{t("catalogError")}</p>
-        ) : !plans ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-52 animate-pulse rounded-xl bg-muted" />
-            ))}
-          </div>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {plans.map((plan) => {
-              const btn = buttonFor(plan);
-              // The cycle this CARD actually renders. A plan that cannot be
-              // bought yearly (no yearly price row / no stored figures) or the
-              // free trial keeps its MONTHLY offer instead of printing "₹0/yr"
-              // under a disabled button.
-              const viewCycle: BillingCycle =
-                cycle === "yearly" && !plan.yearlyAvailable ? "monthly" : cycle;
-              const price = plan.prices[viewCycle];
-              // Figures come from the STORED row for this cycle (yearly rows
-              // when they exist, monthly otherwise) — never multiplied here.
-              const limits = cardLimits(plan, viewCycle);
-              const periods = cardLimitPeriods(plan, viewCycle);
-              return (
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6">
+          {loadErr ? (
+            <p className="text-sm text-muted-foreground">{t("catalogError")}</p>
+          ) : !plans ? (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              {Array.from({ length: 4 }).map((_, i) => (
                 <div
-                  key={plan.id}
-                  className={`flex flex-col rounded-xl border p-4 ${
-                    plan.id === currentPlan
-                      ? "border-primary bg-primary/5"
-                      : "border-border"
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-foreground">{plan.name}</h3>
-                    {plan.id === currentPlan && (
-                      <Badge variant="secondary">{t("current")}</Badge>
+                  key={i}
+                  className="min-h-[24rem] animate-pulse rounded-2xl border border-border/70 bg-muted"
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              {plans.map((plan) => {
+                const btn = buttonFor(plan);
+                const isCurrent = plan.id === currentPlan;
+                // The cycle this CARD actually renders. A plan that cannot be
+                // bought yearly (no yearly price row / no stored figures) or
+                // the free trial keeps its MONTHLY offer instead of printing
+                // "₹0/yr" under a disabled button.
+                const viewCycle: BillingCycle =
+                  cycle === "yearly" && !plan.yearlyAvailable
+                    ? "monthly"
+                    : cycle;
+                const price = plan.prices[viewCycle];
+                // Figures come from the STORED row for this cycle (yearly rows
+                // when they exist, monthly otherwise) — never multiplied here.
+                const limits = cardLimits(plan, viewCycle);
+                const periods = cardLimitPeriods(plan, viewCycle);
+                // Yearly view, plan with no yearly offer: the explanation goes
+                // on the card, the way the pricing page shows it.
+                const notOffered =
+                  cycle === "yearly" && plan.isPaid && !plan.yearlyAvailable;
+                // One shape for both kinds of row, so every line is the same
+                // height and every figure lands on the same right edge.
+                const rows: { key: string; label: string; value: string | null }[] = [
+                  ...LIMIT_KEYS.filter((key) => limits[key] !== undefined).map(
+                    (key) => ({
+                      key,
+                      label: featureLabel(t, key),
+                      value:
+                        limits[key] === UNLIMITED
+                          ? t("unlimited")
+                          : `${formatCount(limits[key] as number)}${periodSuffix(
+                              t,
+                              periods[key]
+                            )}`,
+                    })
+                  ),
+                  ...FEATURE_KEYS.filter((key) => plan.features[key]).map(
+                    (key) => ({
+                      key,
+                      label: featureLabel(t, key),
+                      value: null,
+                    })
+                  ),
+                ];
+                return (
+                  <article
+                    key={plan.id}
+                    aria-current={isCurrent ? "true" : undefined}
+                    className={cn(
+                      // `min-w-0` is the whole fix for the sideways scrollbar:
+                      // a grid track may not shrink below its content unless
+                      // the item is allowed to.
+                      "flex min-w-0 flex-col overflow-hidden rounded-2xl border bg-popover transition",
+                      isCurrent
+                        ? "border-[#1d6fb8] shadow-sm dark:border-[#7cb8e8]"
+                        : "border-border/80"
                     )}
-                  </div>
-                  {plan.tagline && (
-                    <p className="mt-1 text-xs text-muted-foreground">{plan.tagline}</p>
-                  )}
-                  <div className="mt-3">
-                    <span className="text-2xl font-bold text-foreground">
-                      {price === UNLIMITED || (price === 0 && !plan.isPaid)
-                        ? t("free")
-                        : formatCurrency(price, plan.currency)}
-                    </span>
-                    {plan.isPaid && (
-                      <span className="text-xs text-muted-foreground">
-                        {viewCycle === "monthly" ? t("perMonth") : t("perYear")}
-                      </span>
-                    )}
-                  </div>
-
-                  <ul className="mt-3 flex-1 space-y-1 text-xs text-muted-foreground">
-                    {LIMIT_KEYS.map((key) =>
-                      limits[key] === undefined ? null : (
-                        <li key={key} className="flex justify-between gap-2">
-                          <span>{featureLabel(t, key)}</span>
-                          <span className="font-medium text-foreground">
-                            {limits[key] === UNLIMITED
-                              ? t("unlimited")
-                              : `${formatCount(limits[key] as number)}${periodSuffix(t, periods[key])}`}
-                          </span>
-                        </li>
-                      )
-                    )}
-                    {FEATURE_KEYS.map((key) =>
-                      plan.features[key] ? (
-                        <li key={key} className="flex justify-between gap-2">
-                          <span>{featureLabel(t, key)}</span>
-                          <span className="font-medium text-foreground">✓</span>
-                        </li>
-                      ) : null
-                    )}
-                  </ul>
-
-                  <Button
-                    className="mt-4"
-                    variant={plan.id === currentPlan ? "outline" : "default"}
-                    disabled={btn.disabled || busy}
-                    onClick={() => choose(plan)}
                   >
-                    {pendingPlan === plan.id ? t("working") : btn.label}
-                  </Button>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                    {/* The pricing card's bordered title block, on its
+                        light-blue wash. `min-h` reserves two tagline lines so
+                        the price starts at the same height on every card,
+                        whether or not the plan has a tagline. */}
+                    <header
+                      className={cn(
+                        "border-b border-border/70 px-4 py-3.5",
+                        BRAND_WASH
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <h3
+                          className={cn(
+                            "min-w-0 text-sm font-semibold leading-snug",
+                            BRAND_GRADIENT_TEXT
+                          )}
+                        >
+                          {plan.name}
+                        </h3>
+                        {isCurrent && (
+                          <span
+                            className={cn(
+                              "shrink-0 rounded-full px-2 py-0.5 text-[0.625rem] font-semibold whitespace-nowrap text-white",
+                              BRAND_GRADIENT
+                            )}
+                          >
+                            {t("current")}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 min-h-[2rem] text-xs leading-normal text-muted-foreground">
+                        {plan.tagline}
+                      </p>
+                    </header>
+
+                    <div className="px-4 pt-4">
+                      <p className="flex items-baseline gap-1.5">
+                        <span className="text-2xl font-bold leading-none tracking-tight tabular-nums text-foreground">
+                          {price === UNLIMITED || (price === 0 && !plan.isPaid)
+                            ? t("free")
+                            : formatCurrency(price, plan.currency)}
+                        </span>
+                        {plan.isPaid && (
+                          <span className="text-xs font-medium text-muted-foreground">
+                            {viewCycle === "monthly" ? t("perMonth") : t("perYear")}
+                          </span>
+                        )}
+                      </p>
+                      {notOffered && (
+                        <p className="mt-2 text-[0.6875rem] leading-snug text-muted-foreground">
+                          {t("yearlyUnavailable")}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* flex-1 pushes the CTA to the foot of the card, so the
+                        buttons line up across the row however many figures sit
+                        above them. */}
+                    <ul className="mt-4 flex-1 divide-y divide-border/50 border-t border-border/70 px-4">
+                      {rows.map((row) => (
+                        <li
+                          key={row.key}
+                          className="flex items-baseline justify-between gap-3 py-1.5 text-xs"
+                        >
+                          <span className="min-w-0 flex-1 leading-snug text-muted-foreground">
+                            {row.label}
+                          </span>
+                          {row.value === null ? (
+                            <Check
+                              aria-hidden={true}
+                              className={cn(
+                                "size-3.5 shrink-0 self-center",
+                                BRAND_ACCENT
+                              )}
+                            />
+                          ) : (
+                            <span className="font-semibold tabular-nums whitespace-nowrap text-foreground">
+                              {row.value}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+
+                    <div className="px-4 pt-4 pb-4">
+                      <Button
+                        title={notOffered ? t("yearlyUnavailable") : undefined}
+                        disabled={btn.disabled}
+                        onClick={() => choose(plan, viewCycle)}
+                        className={cn(
+                          // The Button base is `whitespace-nowrap`; that is
+                          // what let a long label widen this card past the
+                          // dialog edge.
+                          "h-9 w-full rounded-full text-center leading-snug whitespace-normal",
+                          btn.disabled || isCurrent
+                            ? "border-border bg-muted text-muted-foreground"
+                            : cn(
+                                "text-white ring-1 ring-inset ring-black/10",
+                                BRAND_GRADIENT
+                              )
+                        )}
+                      >
+                        {btn.label}
+                      </Button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         {gatewayNote && (
-          <p className="mt-3 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
-            {gatewayNote}
-          </p>
+          <div className="shrink-0 border-t border-border/70 bg-muted/40 px-5 py-3 sm:px-6">
+            <p
+              role="status"
+              aria-live="polite"
+              className="text-xs leading-relaxed text-muted-foreground"
+            >
+              {gatewayNote}
+            </p>
+          </div>
         )}
       </DialogContent>
     </Dialog>

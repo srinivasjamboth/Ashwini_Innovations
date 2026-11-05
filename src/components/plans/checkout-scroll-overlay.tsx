@@ -45,6 +45,19 @@
 // call lives here — <CheckoutPanel> owns all of it, and `/checkout?plan=&cycle=`
 // still serves the same thing for middle-click, shared links, no-JS and the
 // post-login redirect.
+//
+// A SECOND HOST: the account's "Renew / Change plan" dialog opens this same
+// scroller over the dashboard. Two things follow from that and both are handled
+// by OPTIONAL props so the pricing section keeps its exact behaviour:
+//   · the Bootstrap/template stylesheet this markup is written against is only
+//     mounted by the marketing, checkout and legal layouts, so the classes are
+//     restated in `billing-scroller.css` and scoped to the `.billing-scroller`
+//     root below. On the landing it changes nothing (same declarations, same
+//     values, Bootstrap's own unscoped `!important` still wins); on a dashboard
+//     route it is what keeps the billing UI from rendering as plain text.
+//   · `backLabel` / `onPaid`: an in-account visitor is not going "back to
+//     pricing" and must not be pushed to /settings?tab=billing — the host owns
+//     the exit and the customer stays on the page they were on.
 // ============================================================
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
@@ -60,6 +73,7 @@ import { ArrowLeft, X } from 'lucide-react';
 
 import { Card, Header } from '@/components/ui/container-scroll-animation';
 import { CheckoutPanel } from '@/components/plans/checkout-panel';
+import './billing-scroller.css';
 
 export interface CheckoutScrollOverlayProps {
   planId: string | null;
@@ -69,6 +83,16 @@ export interface CheckoutScrollOverlayProps {
    *  that matters, so this is decoration only. */
   planName?: string | null;
   onClose: () => void;
+  /** Label of the back control. Defaults to the pricing section's wording,
+   *  which is the only host that actually goes back to pricing. */
+  backLabel?: string;
+  /**
+   * Called instead of `onClose` when the payment completes, so a host can end
+   * somewhere else (the account flow: close, refresh entitlements, stay on the
+   * page). The exit animation still plays first. Omitted, `onClose` handles
+   * both ways out, exactly as the pricing section does today.
+   */
+  onPaid?: () => void;
 }
 
 // Published Aceternity geometry, kept as the author set it: 20° of tilt and
@@ -94,6 +118,8 @@ export function CheckoutScrollOverlay({
   cycle,
   planName,
   onClose,
+  backLabel = 'Back to pricing',
+  onPaid,
 }: CheckoutScrollOverlayProps) {
   const titleId = useId();
   const layerRef = useRef<HTMLDivElement>(null);
@@ -168,20 +194,25 @@ export function CheckoutScrollOverlay({
     };
   }, [settle]);
 
-  const requestClose = useCallback(() => {
+  // The way out, in both directions: dismissed without paying (`onClose`) or
+  // paid and handed to the host (`after`). `after` is a parameter rather than a
+  // second callback on purpose — the exit animation must play either way, and a
+  // paid close that skipped it would flash the card away mid-transaction.
+  const requestClose = useCallback((after?: () => void) => {
     // Guard the exit animation against a second backdrop click / repeated
     // Escape arriving while it still plays.
     if (closingRef.current) return;
     closingRef.current = true;
+    const finish = after ?? onClose;
     if (prefersReducedMotion) {
-      onClose();
+      finish();
       return;
     }
     // The entrance in reverse: the tab leans, drops back down and fades.
     animate(progress, 0, { duration: EXIT_DURATION, ease: EASE_IN });
     animate(backdropOpacity, 0, { duration: EXIT_DURATION - 0.12 });
     animate(frameOpacity, 0, { duration: EXIT_DURATION - 0.12 });
-    window.setTimeout(onClose, EXIT_DURATION * 1000 + 40);
+    window.setTimeout(finish, EXIT_DURATION * 1000 + 40);
   }, [backdropOpacity, frameOpacity, onClose, prefersReducedMotion, progress]);
 
   // Escape works even if focus somehow left the layer.
@@ -228,12 +259,16 @@ export function CheckoutScrollOverlay({
       aria-modal="true"
       aria-labelledby={titleId}
       onKeyDown={trapFocus}
-      className="fixed inset-0 z-[2000] flex flex-col items-center overflow-hidden px-3 pt-3 pb-2 md:px-8 md:pt-4 md:pb-2"
+      // `billing-scroller` is the scope of `billing-scroller.css` — see the
+      // header. It is on the layer itself, so the layer is styled by the
+      // self-matched rules at the bottom of that file, everything inside it by
+      // the descendant rules.
+      className="billing-scroller fixed inset-0 z-[2000] flex flex-col items-center overflow-hidden px-3 pt-3 pb-2 md:px-8 md:pt-4 md:pb-2"
     >
       {/* Click-away layer, painted under everything the tab owns. */}
       <motion.div
         style={{ opacity: backdropOpacity }}
-        onClick={requestClose}
+        onClick={() => requestClose()}
         className="fixed inset-0 bg-black/70 backdrop-blur-sm"
         aria-hidden
       />
@@ -244,17 +279,17 @@ export function CheckoutScrollOverlay({
       <div className="relative z-10 flex w-full max-w-6xl shrink-0 items-center justify-between gap-3 pb-1">
         <button
           type="button"
-          onClick={requestClose}
+          onClick={() => requestClose()}
           className="btn btn-outline-light rounded-pill d-inline-flex align-items-center gap-2 px-3 py-1.5 text-white"
           style={{ fontSize: 14, fontWeight: 500 }}
         >
           <ArrowLeft className="size-4" aria-hidden />
-          Back to pricing
+          {backLabel}
         </button>
         <button
           ref={closeButtonRef}
           type="button"
-          onClick={requestClose}
+          onClick={() => requestClose()}
           aria-label="Close billing"
           className="btn btn-outline-light rounded-circle d-inline-flex align-items-center justify-content-center text-white"
           style={{ width: 38, height: 38 }}
@@ -319,7 +354,12 @@ export function CheckoutScrollOverlay({
           <CheckoutPanel
             planId={planId}
             cycle={cycle}
-            onBackToPricing={requestClose}
+            onBackToPricing={() => requestClose()}
+            backLabel={backLabel}
+            // Only overridden when a host asks for it: with no `onPaid` the
+            // panel keeps its own /settings?tab=billing handoff, so the pricing
+            // section is byte-for-byte unchanged.
+            onPaid={onPaid ? () => requestClose(onPaid) : undefined}
             className="row g-4 g-lg-5 align-items-start"
           />
         </Card>
