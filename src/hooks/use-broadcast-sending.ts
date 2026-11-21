@@ -415,14 +415,19 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       const INSERT_CHUNK = 200;
       for (let i = 0; i < newContacts.length; i += INSERT_CHUNK) {
         const batch = newContacts.slice(i, i + INSERT_CHUNK);
-        const { error: upsertErr } = await supabase
+        const { error: insertErr } = await supabase
           .from('contacts')
-          .upsert(batch, {
-            onConflict: 'account_id,phone_normalized',
-            ignoreDuplicates: true,
-          });
-        if (upsertErr) {
-          throw new Error(`Failed to create CSV contacts: ${upsertErr.message}`);
+          .insert(batch);
+
+        if (insertErr) {
+          // If a batch fails (e.g. 23505 race condition from another tab or import),
+          // retry individually ignoring unique constraint violations
+          for (const row of batch) {
+            const { error: singleErr } = await supabase.from('contacts').insert(row);
+            if (singleErr && singleErr.code !== '23505') {
+              throw new Error(`Failed to create CSV contacts: ${singleErr.message}`);
+            }
+          }
         }
       }
 
