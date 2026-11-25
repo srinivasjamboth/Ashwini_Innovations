@@ -61,6 +61,13 @@ export function SettingsOverview({
     // Cheap counts — resolve fast, render immediately.
     (async () => {
       setCountsLoading(true);
+      const { data: waCfg } = await supabase
+        .from('whatsapp_config')
+        .select('waba_id')
+        .eq('account_id', acctId)
+        .maybeSingle();
+      const activeWabaId = waCfg?.waba_id ?? null;
+
       const [membersRes, invitesRes, templatesTotal, templatesPending, tagsRes, fieldsRes] =
         await Promise.allSettled([
           fetch('/api/account/members', { cache: 'no-store' }).then((r) => r.json()),
@@ -69,15 +76,23 @@ export function SettingsOverview({
                 r.json(),
               )
             : Promise.resolve(null),
-          supabase
-            .from('message_templates')
-            .select('id', { count: 'exact', head: true })
-            .eq('user_id', userId),
-          supabase
-            .from('message_templates')
-            .select('id', { count: 'exact', head: true })
-            .eq('user_id', userId)
-            .eq('status', 'PENDING'),
+          activeWabaId
+            ? supabase
+                .from('message_templates')
+                .select('id', { count: 'exact', head: true })
+                .eq('account_id', acctId)
+                .eq('waba_id', activeWabaId)
+                .is('removed_at', null)
+            : Promise.resolve({ count: 0 }),
+          activeWabaId
+            ? supabase
+                .from('message_templates')
+                .select('id', { count: 'exact', head: true })
+                .eq('account_id', acctId)
+                .eq('waba_id', activeWabaId)
+                .is('removed_at', null)
+                .eq('status', 'PENDING')
+            : Promise.resolve({ count: 0 }),
           supabase
             .from('tags')
             .select('id', { count: 'exact', head: true })

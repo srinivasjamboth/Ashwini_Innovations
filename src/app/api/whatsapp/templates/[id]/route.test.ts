@@ -65,7 +65,7 @@ function makeSupabaseMock() {
 
     const b: Record<string, unknown> = {}
     const chain = () => b
-    for (const m of ['select', 'eq', 'in', 'order', 'limit']) b[m] = vi.fn(chain)
+    for (const m of ['select', 'eq', 'is', 'in', 'order', 'limit']) b[m] = vi.fn(chain)
     b.update = vi.fn((patch: Record<string, unknown>) => {
       if (table === 'message_templates') templateUpdates.push(patch)
       return b

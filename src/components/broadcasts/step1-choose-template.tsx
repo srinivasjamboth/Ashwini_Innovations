@@ -107,13 +107,33 @@ export function Step1ChooseTemplate({
   // (header/body/footer/buttons/samples), so picking one from the
   // dropdown needs no second fetch to fill the preview.
   const loadTemplates = useCallback(async () => {
+    if (!accountId) {
+      setTemplates([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const supabase = createClient();
+      const { data: cfg } = await supabase
+        .from('whatsapp_config')
+        .select('waba_id')
+        .eq('account_id', accountId)
+        .maybeSingle();
+
+      const wabaId = (cfg as { waba_id?: string | null } | null)?.waba_id ?? null;
+      if (!wabaId) {
+        setTemplates([]);
+        return;
+      }
+
       const { data, error: fetchError } = await supabase
         .from('message_templates')
         .select('*')
+        .eq('account_id', accountId)
+        .eq('waba_id', wabaId)
+        .is('removed_at', null)
         .eq('status', 'APPROVED')
         .order('created_at', { ascending: false });
 
@@ -124,7 +144,7 @@ export function Step1ChooseTemplate({
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [accountId, t]);
 
   useEffect(() => {
     void loadTemplates();

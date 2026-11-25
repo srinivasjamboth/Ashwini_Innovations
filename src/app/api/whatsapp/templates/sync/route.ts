@@ -281,7 +281,36 @@ export async function POST() {
 
     let inserted = 0
     let updated = 0
+    let adopted = 0
     const errors: { name: string; language: string; message: string }[] = []
+
+    const wabaId = config.waba_id as string
+    const { data: allLocalRows, error: localFetchErr } = await supabase
+      .from('message_templates')
+      .select('id, waba_id, meta_template_id, name, language, header_media_url, carousel, removed_at, created_at')
+      .eq('account_id', accountId)
+
+    if (localFetchErr) {
+      return NextResponse.json({ error: localFetchErr.message }, { status: 500 })
+    }
+
+    const localRows = (allLocalRows ?? []) as Array<{
+      id: string
+      waba_id: string | null
+      meta_template_id: string | null
+      name: string
+      language: string
+      header_media_url: string | null
+      carousel: unknown
+      removed_at: string | null
+      created_at: string | null
+    }>
+
+    const wabaChanged = localRows.some(
+      (r) => r.waba_id !== null && r.waba_id !== wabaId && r.removed_at === null,
+    )
+    const syncedMetaIds = new Set<string>()
+    const matchedLocalIds = new Set<string>()
     // A media header that could not be mirrored leaves a template that
     // LOOKS fine in the list and fails on send, so it is reported
     // separately rather than silently. Distinct from `errors`, which are
@@ -323,6 +352,8 @@ export async function POST() {
         // post-017, so an INSERT without it errors.
         account_id: accountId,
         user_id: userId,
+        waba_id: wabaId,
+        removed_at: null,
         name: t.name,
         category: normalizeCategory(t.category),
         language: t.language,
@@ -342,21 +373,20 @@ export async function POST() {
         updated_at: new Date().toISOString(),
       }
 
-      const { data: existing, error: lookupErr } = await supabase
-        .from('message_templates')
-        .select('id, header_media_url, carousel')
-        .eq('account_id', accountId)
-        .eq('name', t.name)
-        .eq('language', t.language)
-        .maybeSingle()
+      syncedMetaIds.add(t.id)
 
-      if (lookupErr) {
-        errors.push({
-          name: t.name,
-          language: t.language,
-          message: lookupErr.message,
-        })
-        continue
+      // Match in priority order:
+      // 1. Current WABA + Meta template id
+      // 2. Legacy (waba_id IS NULL) + Meta template id (one-time backfill adoption)
+      // 3. Current WABA + (name, language) (draft/submitted locally without meta_template_id)
+      const existing =
+        localRows.find((r) => r.waba_id === wabaId && r.meta_template_id === t.id) ??
+        localRows.find((r) => r.waba_id === null && r.meta_template_id === t.id) ??
+        localRows.find((r) => r.waba_id === wabaId && r.name === t.name && r.language === t.language) ??
+        null
+
+      if (existing) {
+        matchedLocalIds.add(existing.id)
       }
 
       // A media header is only sendable with a media URL that WE own.
@@ -458,6 +488,9 @@ export async function POST() {
             message: updErr.message,
           })
         } else {
+          if (existing.waba_id === null || existing.removed_at !== null) {
+            adopted++
+          }
           updated++
         }
       } else {
@@ -476,14 +509,49 @@ export async function POST() {
       }
     }
 
+    const truncated = pageCount >= PAGE_CAP && nextUrl !== null
+    // Only after a complete, successful listing, soft-mark local rows of this
+    // WABA that Meta no longer returns as removed_at = now.
+    let removed = 0
+    if (!truncated && errors.length === 0) {
+      const toRemoveIds = localRows
+        .filter(
+          (r) =>
+            r.waba_id === wabaId &&
+            r.removed_at === null &&
+            r.meta_template_id !== null &&
+            !syncedMetaIds.has(r.meta_template_id),
+        )
+        .map((r) => r.id)
+
+      if (toRemoveIds.length > 0) {
+        const { error: remErr } = await supabase
+          .from('message_templates')
+          .update({ removed_at: new Date().toISOString() })
+          .in('id', toRemoveIds)
+        if (!remErr) {
+          removed = toRemoveIds.length
+        }
+      }
+    }
+
+    const legacy = localRows.filter(
+      (r) => r.waba_id === null && !matchedLocalIds.has(r.id),
+    ).length
+
     return NextResponse.json({
       success: errors.length === 0,
       total: metaTemplates.length,
       inserted,
       updated,
+      adopted,
+      legacy,
+      removed,
+      waba_id: wabaId,
+      waba_changed: wabaChanged,
       errors,
       mediaWarnings,
-      truncated: pageCount >= PAGE_CAP && nextUrl !== null,
+      truncated,
     })
   } catch (error) {
     // Auth failures map to 401/403 rather than being folded into the

@@ -163,6 +163,8 @@ export function TemplateManager() {
 
   const [loading, setLoading] = useState(true);
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [currentWabaId, setCurrentWabaId] = useState<string | null>(null);
+  const [wabaSwitching, setWabaSwitching] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   // Runway submit flow (this page only): the plane rolls while the
   // request is in flight, sprints to 100% and takes off when Meta
@@ -279,14 +281,19 @@ export function TemplateManager() {
   // only a gentle note when new rows actually landed, and errors are
   // swallowed (a background pass failing must not look like a crash).
   const runAutoSync = useCallback(async () => {
-    if (!user || syncInFlightRef.current) return;
+    if (!user || !accountId || syncInFlightRef.current) return;
     syncInFlightRef.current = true;
     try {
       const res = await fetch('/api/whatsapp/templates/sync', { method: 'POST' });
       if (res.ok) {
         lastSyncAtRef.current = Date.now();
         const data = await res.json().catch(() => null);
-        if (user) await fetchTemplates(user.id);
+        if (data?.waba_changed) {
+          setTemplates([]);
+          setWabaSwitching(true);
+        }
+        await fetchTemplates();
+        setWabaSwitching(false);
         if (data && Number(data.inserted) > 0) {
           toast.success(t('toastAutoSyncNew', { count: Number(data.inserted) }));
         }
@@ -296,11 +303,12 @@ export function TemplateManager() {
       // loud path when something is actually wrong.
     } finally {
       syncInFlightRef.current = false;
+      setWabaSwitching(false);
     }
     // fetchTemplates is a stable in-component declaration (reads refs
     // only) — listing it would re-create the callback every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, t]);
+  }, [user, accountId, t]);
 
   useEffect(() => {
     function onVisibilityChange() {
@@ -407,21 +415,43 @@ export function TemplateManager() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!user) {
+    if (!user || !accountId) {
       setLoading(false);
       return;
     }
-    fetchTemplates(user.id);
+    fetchTemplates();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, user?.id]);
+  }, [authLoading, user?.id, accountId]);
 
-  async function fetchTemplates(userId: string) {
+  async function fetchTemplates(_userId?: string) {
+    if (!accountId) {
+      setTemplates([]);
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
+      const { data: cfg } = await supabase
+        .from('whatsapp_config')
+        .select('waba_id, phone_number_id')
+        .eq('account_id', accountId)
+        .maybeSingle();
+
+      const wabaId = cfg?.waba_id ?? null;
+      setWaConnected(Boolean(cfg?.phone_number_id));
+      setCurrentWabaId(wabaId);
+
+      if (!wabaId) {
+        setTemplates([]);
+        return;
+      }
+
       const { data, error } = await supabase
         .from('message_templates')
         .select('*')
-        .eq('user_id', userId)
+        .eq('account_id', accountId)
+        .eq('waba_id', wabaId)
+        .is('removed_at', null)
         .order('created_at', { ascending: false });
       if (error) throw error;
       setTemplates(data || []);
@@ -613,12 +643,18 @@ export function TemplateManager() {
           { duration: 10000 },
         );
       }
+      if (data.waba_changed) {
+        setTemplates([]);
+        setWabaSwitching(true);
+      }
       await fetchTemplates(user.id);
+      setWabaSwitching(false);
     } catch (err) {
       console.error('Template sync error:', err);
       toast.error(err instanceof Error ? err.message : t('toastSyncError'));
     } finally {
       setSyncing(false);
+      setWabaSwitching(false);
     }
   }
 
@@ -877,13 +913,33 @@ export function TemplateManager() {
         }
       />
 
-      {templates.length === 0 ? (
+      {wabaSwitching || (loading && templates.length === 0) ? (
+        <Card>
+          <CardContent className="space-y-3 py-8">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin text-primary" />
+              <span>Fetching templates from your WhatsApp account...</span>
+            </div>
+            <div className="space-y-2">
+              <div className="h-10 w-full animate-pulse rounded-md bg-muted/60" />
+              <div className="h-10 w-full animate-pulse rounded-md bg-muted/60" />
+              <div className="h-10 w-full animate-pulse rounded-md bg-muted/60" />
+            </div>
+          </CardContent>
+        </Card>
+      ) : templates.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-            <p className="text-muted-foreground text-sm">{t('noTemplates')}</p>
-            <p className="text-muted-foreground text-xs mt-1">
-              {t('createFirst')}
+            <p className="text-muted-foreground text-sm">
+              {!currentWabaId
+                ? 'Connect your WhatsApp Business account in Settings first to view and sync templates.'
+                : t('noTemplates')}
             </p>
+            {currentWabaId && (
+              <p className="text-muted-foreground text-xs mt-1">
+                {t('createFirst')}
+              </p>
+            )}
           </CardContent>
         </Card>
       ) : (

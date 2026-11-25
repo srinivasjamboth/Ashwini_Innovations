@@ -22,10 +22,22 @@ export async function GET() {
   try {
     const { supabase, accountId } = await requireRole('viewer');
 
+    const { data: cfg } = await supabase
+      .from('whatsapp_config')
+      .select('waba_id')
+      .eq('account_id', accountId)
+      .maybeSingle();
+
+    if (!cfg?.waba_id) {
+      return NextResponse.json({ templates: [] as MessageTemplate[], waba_id: null });
+    }
+
     const { data, error } = await supabase
       .from('message_templates')
       .select('*')
       .eq('account_id', accountId)
+      .eq('waba_id', cfg.waba_id)
+      .is('removed_at', null)
       .eq('status', 'APPROVED')
       .order('name');
 
@@ -33,7 +45,7 @@ export async function GET() {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ templates: (data ?? []) as MessageTemplate[] });
+    return NextResponse.json({ templates: (data ?? []) as MessageTemplate[], waba_id: cfg.waba_id });
   } catch (error) {
     return toErrorResponse(error);
   }

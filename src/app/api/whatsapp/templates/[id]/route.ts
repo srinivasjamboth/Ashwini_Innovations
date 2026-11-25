@@ -85,6 +85,18 @@ export async function PATCH(
       return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 })
     }
 
+    // Resolve current WABA id from server-side config; requests for a template
+    // belonging to another WABA or removed/legacy return 404.
+    const { data: cfg } = await supabase
+      .from('whatsapp_config')
+      .select('waba_id')
+      .eq('account_id', accountId)
+      .maybeSingle()
+
+    if (!cfg?.waba_id) {
+      return NextResponse.json({ error: 'Template not found.' }, { status: 404 })
+    }
+
     // RLS handles ownership, but we need the existing row to read
     // meta_template_id and status — fetch explicitly.
     const { data: existing, error: lookupErr } = await supabase
@@ -92,6 +104,8 @@ export async function PATCH(
       .select('id, name, status, meta_template_id, language')
       .eq('id', id)
       .eq('account_id', accountId)
+      .eq('waba_id', cfg.waba_id)
+      .is('removed_at', null)
       .maybeSingle()
     if (lookupErr || !existing) {
       return NextResponse.json({ error: 'Template not found.' }, { status: 404 })
@@ -254,11 +268,23 @@ export async function DELETE(
     // the PATCH handler above.
     const { supabase, accountId } = await requireRole('admin')
 
+    const { data: cfgForDelete } = await supabase
+      .from('whatsapp_config')
+      .select('waba_id')
+      .eq('account_id', accountId)
+      .maybeSingle()
+
+    if (!cfgForDelete?.waba_id) {
+      return NextResponse.json({ error: 'Template not found.' }, { status: 404 })
+    }
+
     const { data: existing, error: lookupErr } = await supabase
       .from('message_templates')
       .select('id, name, meta_template_id')
       .eq('id', id)
       .eq('account_id', accountId)
+      .eq('waba_id', cfgForDelete.waba_id)
+      .is('removed_at', null)
       .maybeSingle()
     if (lookupErr || !existing) {
       return NextResponse.json({ error: 'Template not found.' }, { status: 404 })

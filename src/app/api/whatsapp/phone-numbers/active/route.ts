@@ -34,8 +34,16 @@ export async function POST(request: Request) {
       )
     }
 
+    const admin = supabaseAdmin()
+    const { data: prevCfg } = await admin
+      .from('whatsapp_config')
+      .select('waba_id')
+      .eq('account_id', accountId)
+      .maybeSingle()
+    const prevWabaId = (prevCfg as { waba_id?: string | null } | null)?.waba_id ?? null
+
     const result = await setActivePhoneNumber({
-      admin: supabaseAdmin(),
+      admin,
       accountId,
       phoneNumberId,
     })
@@ -50,13 +58,14 @@ export async function POST(request: Request) {
     // number's WABA to this app. Idempotent; a failure here must never
     // undo a successful switch — sending already works off the shared
     // business token — so this is log-only.
+    let newWabaId: string | null = null
     try {
-      const admin = supabaseAdmin()
       const { data: cfg } = await admin
         .from('whatsapp_config')
         .select('waba_id, access_token')
         .eq('account_id', accountId)
         .maybeSingle()
+      newWabaId = (cfg as { waba_id?: string | null } | null)?.waba_id ?? null
       if (cfg?.waba_id && cfg.access_token) {
         await subscribeWabaToApp({
           wabaId: cfg.waba_id,
@@ -67,7 +76,12 @@ export async function POST(request: Request) {
       console.error('[whatsapp/phone-numbers/active] sibling subscribe failed (non-fatal):', err)
     }
 
-    return NextResponse.json({ ok: true, phone_number_id: phoneNumberId })
+    return NextResponse.json({
+      ok: true,
+      phone_number_id: phoneNumberId,
+      waba_id: newWabaId,
+      waba_changed: prevWabaId !== newWabaId,
+    })
   } catch (err) {
     return toErrorResponse(err)
   }

@@ -135,10 +135,20 @@ async function countUsage(
   now: Date,
 ): Promise<number> {
   switch (feature) {
-    case 'templates':
+    case 'templates': {
+      const { data: cfg } = await admin
+        .from('whatsapp_config')
+        .select('waba_id')
+        .eq('account_id', accountId)
+        .maybeSingle();
+      const wabaId = (cfg as { waba_id?: string | null } | null)?.waba_id ?? null;
+      if (!wabaId) return 0;
       return headCount(admin, 'message_templates', accountId, [
+        { column: 'waba_id', op: 'eq', value: wabaId },
+        { column: 'removed_at', op: 'is', value: null },
         { column: 'status', op: 'neq', value: 'REJECTED' },
       ]);
+    }
     case 'team_members': {
       const members = await headCount(admin, 'profiles', accountId);
       const pending = await headCount(admin, 'account_invitations', accountId, [

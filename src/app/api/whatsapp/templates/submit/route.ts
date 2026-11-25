@@ -27,6 +27,7 @@ import { normalizeStatus } from '@/lib/whatsapp/template-status-normalize'
 function buildUpsertRow(
   accountId: string,
   userId: string,
+  wabaId: string,
   payload: TemplatePayload,
   extras: {
     status: 'DRAFT' | string
@@ -39,10 +40,10 @@ function buildUpsertRow(
     // of migration 017. Without this an INSERT throws on the
     // not-null constraint.
     account_id: accountId,
-    // Original author — kept as audit only. The unique index is
-    // still on (user_id, name, language) — see the upsert helper
-    // for the cross-teammate dedup follow-up.
+    // Original author — kept as audit only.
     user_id: userId,
+    waba_id: wabaId,
+    removed_at: null,
     name: payload.name,
     category: payload.category,
     language: payload.language,
@@ -71,14 +72,9 @@ async function upsertTemplateRow(
   supabase: SupabaseClient,
   row: ReturnType<typeof buildUpsertRow>,
 ) {
-  // TODO(account-sharing): conflict target is still scoped to
-  // user_id. Once a follow-up migration drops the legacy unique
-  // index on (user_id, name, language) and adds (account_id,
-  // name, language), switch `onConflict` here so two teammates
-  // can't shadow each other's same-named template.
   return supabase
     .from('message_templates')
-    .upsert(row, { onConflict: 'user_id,name,language' })
+    .upsert(row, { onConflict: 'waba_id,name,language' })
     .select()
     .single()
 }
@@ -134,6 +130,20 @@ export async function POST(request: Request) {
       )
     }
 
+    const dryRun =
+      process.env.WHATSAPP_TEMPLATES_DRY_RUN === 'true' ||
+      process.env.WHATSAPP_TEMPLATES_DRY_RUN === '1'
+
+    let wabaId = 'dry-run-waba'
+    if (!dryRun) {
+      const { data: cfg } = await supabase
+        .from('whatsapp_config')
+        .select('waba_id')
+        .eq('account_id', accountId)
+        .maybeSingle()
+      if (cfg?.waba_id) wabaId = cfg.waba_id
+    }
+
     // Plan enforcement (Part 4): templates are a counted, gated resource
     // (rejected rows are excluded from the count inside getEntitlements, so
     // a Meta rejection never wastes a slot). Only a NEW template consumes a
@@ -143,18 +153,15 @@ export async function POST(request: Request) {
       .from('message_templates')
       .select('id')
       .eq('account_id', accountId)
-      .eq('user_id', userId)
+      .eq('waba_id', wabaId)
       .eq('name', payload.name)
       .eq('language', payload.language)
+      .is('removed_at', null)
       .maybeSingle()
     if (!existingTemplate) {
       const limit = await checkLimit(accountId, 'templates')
       if (!limit.allowed) return NextResponse.json(limit, { status: 403 })
     }
-
-    const dryRun =
-      process.env.WHATSAPP_TEMPLATES_DRY_RUN === 'true' ||
-      process.env.WHATSAPP_TEMPLATES_DRY_RUN === '1'
 
     let metaTemplateId: string
     let metaStatus: string
@@ -186,6 +193,7 @@ export async function POST(request: Request) {
           { status: 400 },
         )
       }
+      wabaId = config.waba_id
 
       const accessToken = decrypt(config.access_token)
 
@@ -221,7 +229,7 @@ export async function POST(request: Request) {
         // until they fix and re-submit.
         await upsertTemplateRow(
           supabase,
-          buildUpsertRow(accountId, userId, payload, {
+          buildUpsertRow(accountId, userId, wabaId, payload, {
             status: 'DRAFT',
             metaTemplateId: null,
             submissionError: message,
@@ -241,7 +249,7 @@ export async function POST(request: Request) {
 
     const { data: row, error: upsertErr } = await upsertTemplateRow(
       supabase,
-      buildUpsertRow(accountId, userId, payload, {
+      buildUpsertRow(accountId, userId, wabaId, payload, {
         status: normalizeStatus(metaStatus),
         metaTemplateId,
         submissionError: null,

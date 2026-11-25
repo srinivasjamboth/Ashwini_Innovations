@@ -119,6 +119,24 @@ BEGIN
       'messages.template_payload is missing — migration 053 did not apply';
   END IF;
 
+  -- Migration 061: contact_import_jobs and message_templates.waba_id
+  IF to_regclass('public.contact_import_jobs') IS NULL THEN
+    RAISE EXCEPTION
+      'contact_import_jobs is missing — migration 061 did not apply';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'message_templates'
+      AND column_name = 'waba_id'
+  ) THEN
+    RAISE EXCEPTION
+      'message_templates.waba_id is missing — migration 061 did not apply';
+  END IF;
+  IF to_regclass('public.idx_message_templates_waba_name_lang') IS NULL THEN
+    RAISE EXCEPTION
+      'idx_message_templates_waba_name_lang is missing — migration 061 did not apply';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;

@@ -1,3 +1,4 @@
+
 /**
  * CSV parsing for the contacts import modal. Shared + unit-tested so
  * tag-column handling stays aligned with phone/name/email/company.
@@ -10,6 +11,8 @@ export interface ParsedContactRow {
   company?: string;
   /** Tag names from the optional `tags` column (comma/semicolon separated). */
   tagNames: string[];
+  /** Extra columns matched case-insensitively, trimmed, used as custom contact attributes. */
+  attributes?: Record<string, string>;
   /**
    * 1-based physical CSV line where this record starts. Only populated
    * when `parseContactCsv` is called with `withRowNumbers` — the
@@ -71,9 +74,10 @@ export function parseContactCsv(text: string, withRowNumbers = false): ParseCont
   // Record 0 is the header line; the remainder are data records. Scan
   // is quote-aware, so a quoted cell containing a newline stays ONE
   // record (splitting on raw newlines used to tear such rows in half).
-  const headers = records[0].text
+  const rawHeaders = records[0].text
     .split(',')
-    .map((h) => h.trim().toLowerCase().replace(/["']/g, ''));
+    .map((h) => h.trim().replace(/["']/g, ''));
+  const headers = rawHeaders.map((h) => h.toLowerCase());
 
   // The number can arrive as a single `phone` column (legacy: E.164 with a
   // leading `+`) or as a `whatsapp` column paired with a separate
@@ -99,6 +103,15 @@ export function parseContactCsv(text: string, withRowNumbers = false): ParseCont
   const companyIdx = headers.indexOf('company');
   const tagsIdx = headers.indexOf('tags');
 
+  // Any extra column becomes an attribute (matched by header name, case-insensitive, trimmed)
+  const knownIndices = new Set([phoneIdx, whatsappIdx, countryCodeIdx, nameIdx, emailIdx, companyIdx, tagsIdx]);
+  const extraAttrColumns: { index: number; name: string }[] = [];
+  rawHeaders.forEach((h, idx) => {
+    if (!knownIndices.has(idx) && h) {
+      extraAttrColumns.push({ index: idx, name: h });
+    }
+  });
+
   const rows: ParsedContactRow[] = [];
 
   for (let i = 1; i < records.length; i++) {
@@ -119,6 +132,14 @@ export function parseContactCsv(text: string, withRowNumbers = false): ParseCont
         : '';
     const phone = composeInternationalPhone(numberRaw, countryCodeRaw);
 
+    const attributes: Record<string, string> = {};
+    for (const col of extraAttrColumns) {
+      const val = values[col.index]?.replace(/["']/g, '').trim();
+      if (val !== undefined && val !== '') {
+        attributes[col.name] = val;
+      }
+    }
+
     rows.push({
       phone,
       name:
@@ -135,6 +156,7 @@ export function parseContactCsv(text: string, withRowNumbers = false): ParseCont
           : undefined,
       tagNames:
         tagsIdx >= 0 ? parseTagCell(values[tagsIdx]?.replace(/["']/g, '')) : [],
+      ...(Object.keys(attributes).length > 0 ? { attributes } : {}),
       // Set only when requested — callers that don't ask get byte-identical
       // row objects to before, which their equality checks depend on.
       ...(withRowNumbers ? { sourceRow: records[i].line } : {}),

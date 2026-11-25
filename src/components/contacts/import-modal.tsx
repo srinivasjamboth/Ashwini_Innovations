@@ -260,22 +260,27 @@ export function ImportModal({
       skipped += inFileDupes;
 
       // 2) Skip numbers already in this account. One read of the
-      //    generated `phone_normalized` column (migration 022) → Set.
+      //    generated `phone_normalized` column (migration 022) → Map
+      //    so we can also add existing contacts to the target group if
+      //    the user selected one.
       const { data: existingRows } = await supabase
         .from('contacts')
-        .select('phone_normalized')
+        .select('id, phone_normalized')
         .eq('account_id', accountId);
-      const existing = new Set(
-        (existingRows ?? [])
-          .map(
-            (r) => (r as { phone_normalized: string | null }).phone_normalized
-          )
-          .filter((p): p is string => !!p)
-      );
+      const existingByPhone = new Map<string, string>();
+      for (const r of existingRows ?? []) {
+        const row = r as { id: string; phone_normalized: string | null };
+        if (row.phone_normalized) {
+          existingByPhone.set(row.phone_normalized, row.id);
+        }
+      }
 
+      const existingContactIdsForGroup: string[] = [];
       const toInsert = unique.filter((row) => {
-        if (existing.has(normalizeKey(row.phone))) {
+        const existingId = existingByPhone.get(normalizeKey(row.phone));
+        if (existingId) {
           skipped++;
+          existingContactIdsForGroup.push(existingId);
           return false;
         }
         return true;
@@ -396,17 +401,21 @@ export function ImportModal({
         toast.warning(t('toastTagsWarning'));
       }
 
-      // 6) Optional group membership for the contacts we just created.
+      // 6) Optional group membership for imported contacts (both newly
+      //    created and existing contacts found in the CSV).
       //    Additive and best-effort: a failure here never rolls back or
-      //    re-reports the import itself, and existing (skipped) contacts
-      //    are excluded because only createdContactIds is passed in.
+      //    re-reports the import itself.
       let groupAssigned = 0;
-      if (targetGroupId && createdContactIds.length > 0) {
+      const allGroupCandidateIds = [
+        ...createdContactIds,
+        ...existingContactIdsForGroup,
+      ];
+      if (targetGroupId && allGroupCandidateIds.length > 0) {
         try {
           groupAssigned = await addGroupMembersByIds(
             supabase,
             targetGroupId,
-            createdContactIds
+            allGroupCandidateIds
           );
         } catch {
           toast.warning(t('toastGroupWarning'));

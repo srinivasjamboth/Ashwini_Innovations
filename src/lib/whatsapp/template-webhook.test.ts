@@ -67,26 +67,26 @@ function makeSupabaseStub(
             updateCount > 1 && opts.retrySelectResult
               ? opts.retrySelectResult
               : selectResult;
-          return {
+          const chain = {
             eq(column: string, value: unknown) {
               entry.filter = { column, value };
-              return {
-                select() {
-                  return Promise.resolve(result);
-                },
-                then(
-                  onFulfilled: (
-                    v: { error: { message: string } | null },
-                  ) => unknown,
-                ) {
-                  // Allow `await supabase.update().eq()` (no .select()).
-                  return Promise.resolve({ error: result.error }).then(
-                    onFulfilled,
-                  );
-                },
-              };
+              return chain;
+            },
+            select() {
+              return Promise.resolve(result);
+            },
+            then(
+              onFulfilled: (
+                v: { error: { message: string } | null },
+              ) => unknown,
+            ) {
+              // Allow `await supabase.update().eq()` (no .select()).
+              return Promise.resolve({ error: result.error }).then(
+                onFulfilled,
+              );
             },
           };
+          return chain;
         },
       };
     },
@@ -262,6 +262,8 @@ describe('handleTemplateWebhookChange — unknown template stub (#534)', () => {
     expect(calls[2].insert).toEqual({
       account_id: 'acc-1',
       user_id: 'admin-1',
+      waba_id: 'WABA-1',
+      removed_at: null,
       meta_template_id: '555',
       name: 'created_in_meta',
       language: 'de',
@@ -372,6 +374,8 @@ describe('handleTemplateWebhookChange — unknown template stub (#534)', () => {
     expect(calls[2].insert).toEqual({
       account_id: 'acc-1',
       user_id: 'admin-1',
+      waba_id: 'WABA-1',
+      removed_at: null,
       meta_template_id: '559',
       name: 'created_in_meta',
       language: 'en_US',
@@ -432,8 +436,8 @@ describe('handleTemplateWebhookChange — unknown template stub (#534)', () => {
     expect(updates).toHaveLength(2);
     expect(updates[1].update).toEqual(updates[0].update);
     expect(updates[1].filter).toEqual({
-      column: 'meta_template_id',
-      value: '561',
+      column: 'waba_id',
+      value: 'WABA-1',
     });
     expect(warn).not.toHaveBeenCalled();
   });

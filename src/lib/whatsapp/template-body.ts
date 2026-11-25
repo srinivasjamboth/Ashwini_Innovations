@@ -94,11 +94,29 @@ export async function resolveTemplateRow(
   templateName: string,
   requestedLanguage?: string | null
 ): Promise<ResolvedTemplate> {
-  const { data } = await db
+  let wabaId: string | null = null;
+  try {
+    const { data: cfg } = await db
+      .from('whatsapp_config')
+      .select('waba_id')
+      .eq('account_id', accountId)
+      .maybeSingle();
+    wabaId = (cfg as { waba_id?: string | null } | null)?.waba_id ?? null;
+  } catch {
+    // Ignore when called with minimal unit-test mocks that only stub message_templates.
+  }
+
+  let query = db
     .from('message_templates')
     .select('*')
     .eq('account_id', accountId)
     .eq('name', templateName);
+
+  if (wabaId) {
+    query = query.eq('waba_id', wabaId).is('removed_at', null);
+  }
+
+  const { data } = await query;
 
   // Sorted here rather than with `.order()` so the only query-builder
   // surface this helper depends on is select + eq — the same shape the

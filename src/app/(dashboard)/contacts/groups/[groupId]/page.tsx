@@ -24,6 +24,7 @@ import {
   AddByFilterPanel,
 } from '@/components/contacts/groups/add-by-filter-panel';
 import { FolderPreview } from '@/components/contacts/groups/group-folder-tile';
+import { GroupCsvImportPanel } from '@/components/contacts/groups/group-csv-import-panel';
 import { ContactDetailView } from '@/components/contacts/contact-detail-view';
 import { Pagination } from '@/components/admin/pagination';
 import { Button } from '@/components/ui/button';
@@ -53,6 +54,7 @@ import {
   Search,
   SlidersHorizontal,
   Trash2,
+  Upload,
   UserPlus,
   Users,
 } from 'lucide-react';
@@ -80,6 +82,7 @@ export default function GroupDetailPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [addOpen, setAddOpen] = useState(false);
   const [addFilterOpen, setAddFilterOpen] = useState(false);
+  const [csvImportOpen, setCsvImportOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteGroupOpen, setDeleteGroupOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -344,6 +347,15 @@ export default function GroupDetailPage() {
             <SlidersHorizontal className="size-4" />
             {t('addByFilterBtn')}
           </Button>
+          <Button
+            variant="outline"
+            onClick={() => setCsvImportOpen(true)}
+            className="border-border text-muted-foreground hover:bg-muted"
+            disabled={!canEdit}
+          >
+            <Upload className="size-4" />
+            Import CSV
+          </Button>
           <Link href={`/broadcasts/new?groupIds=${group.id}`}>
             <Button className="bg-primary hover:bg-primary/90 text-primary-foreground">
               <Megaphone className="size-4" />
@@ -571,6 +583,15 @@ export default function GroupDetailPage() {
         groupId={group.id}
         groupName={group.name}
         onAdded={refreshAll}
+      />
+
+      {/* Import CSV into group */}
+      <GroupCsvImportPanel
+        open={csvImportOpen}
+        onOpenChange={setCsvImportOpen}
+        groupId={group.id}
+        groupName={group.name}
+        onComplete={refreshAll}
       />
 
       {/* Rename dialog */}

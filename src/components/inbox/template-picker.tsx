@@ -107,13 +107,44 @@ export function TemplatePicker({
         return;
       }
 
-      // Scope by RLS (message_templates_select → is_account_member), NOT by
-      // user_id. Templates are account-owned, so filtering on the caller's
-      // user_id hid templates that a teammate created — leaving them unable
-      // to send approved templates in a shared account.
+      // Scope by account + currently connected WABA id. Never show templates
+      // belonging to a previously connected WABA or soft-removed templates.
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("account_id")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      const accountId = (profile as { account_id?: string | null } | null)?.account_id ?? null;
+      if (!accountId) {
+        if (!cancelled) {
+          setTemplates([]);
+          setLoading(false);
+        }
+        return;
+      }
+
+      const { data: cfg } = await supabase
+        .from("whatsapp_config")
+        .select("waba_id")
+        .eq("account_id", accountId)
+        .maybeSingle();
+
+      const wabaId = (cfg as { waba_id?: string | null } | null)?.waba_id ?? null;
+      if (!wabaId) {
+        if (!cancelled) {
+          setTemplates([]);
+          setLoading(false);
+        }
+        return;
+      }
+
       const { data, error } = await supabase
         .from("message_templates")
         .select("*")
+        .eq("account_id", accountId)
+        .eq("waba_id", wabaId)
+        .is("removed_at", null)
         .eq("status", "APPROVED")
         .order("created_at", { ascending: false });
 

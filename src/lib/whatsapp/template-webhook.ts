@@ -158,11 +158,16 @@ async function handleStatusUpdate(
     submission_error: null,
   }
 
-  const { data, error } = await supabase
-    .from('message_templates')
-    .update(update)
-    .eq('meta_template_id', metaTemplateId)
-    .select('id')
+  const runUpdate = () => {
+    let q = supabase
+      .from('message_templates')
+      .update(update)
+      .eq('meta_template_id', metaTemplateId)
+    if (wabaId) q = q.eq('waba_id', wabaId)
+    return q.select('id')
+  }
+
+  const { data, error } = await runUpdate()
 
   if (error) {
     console.error(
@@ -180,12 +185,7 @@ async function handleStatusUpdate(
       language: value.message_template_language,
       wabaId,
       fields: update,
-      retryUpdate: () =>
-        supabase
-          .from('message_templates')
-          .update(update)
-          .eq('meta_template_id', metaTemplateId)
-          .select('id'),
+      retryUpdate: runUpdate,
       supabase,
     })
     return
@@ -221,12 +221,14 @@ async function handleQualityUpdate(
       : null
 
   const update = { quality_score: score }
-  const runUpdate = () =>
-    supabase
+  const runUpdate = () => {
+    let q = supabase
       .from('message_templates')
       .update(update)
       .eq('meta_template_id', metaTemplateId)
-      .select('id')
+    if (wabaId) q = q.eq('waba_id', wabaId)
+    return q.select('id')
+  }
 
   const { data, error } = await runUpdate()
 
@@ -330,6 +332,8 @@ async function createStubForUnknownTemplate(p: StubParams): Promise<void> {
   const stub = {
     account_id: config.account_id,
     user_id: config.user_id,
+    waba_id: wabaId,
+    removed_at: null,
     meta_template_id: metaTemplateId,
     name,
     language: p.language || DEFAULT_TEMPLATE_LANGUAGE,

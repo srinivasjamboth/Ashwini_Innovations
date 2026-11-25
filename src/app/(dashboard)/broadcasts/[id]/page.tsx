@@ -189,6 +189,7 @@ export default function BroadcastDetailPage() {
   const [schedulingBusy, setSchedulingBusy] = useState<'cancel' | 'reschedule' | null>(
     null,
   );
+  const [templateUnavailable, setTemplateUnavailable] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -202,6 +203,32 @@ export default function BroadcastDetailPage() {
 
       if (bcError) throw bcError;
       setBroadcast(bc);
+
+      if (bc && (bc.status === 'draft' || bc.status === 'scheduled')) {
+        const { data: cfg } = await supabase
+          .from('whatsapp_config')
+          .select('waba_id')
+          .eq('account_id', bc.account_id)
+          .maybeSingle();
+        const wabaId = (cfg as { waba_id?: string | null } | null)?.waba_id ?? null;
+        if (!wabaId) {
+          setTemplateUnavailable(true);
+        } else {
+          const { data: tmpl } = await supabase
+            .from('message_templates')
+            .select('id')
+            .eq('account_id', bc.account_id)
+            .eq('waba_id', wabaId)
+            .is('removed_at', null)
+            .eq('status', 'APPROVED')
+            .eq('name', bc.template_name)
+            .limit(1)
+            .maybeSingle();
+          setTemplateUnavailable(!tmpl);
+        }
+      } else {
+        setTemplateUnavailable(false);
+      }
 
       const { data: recs, error: recsError } = await supabase
         .from('broadcast_recipients')
@@ -613,6 +640,21 @@ export default function BroadcastDetailPage() {
           Shows the chosen wall-clock time + zone and offers the two
           pre-execution actions: reschedule and cancel. The server guards
           both with a status='scheduled' precondition. */}
+      {templateUnavailable && (broadcast.status === 'draft' || broadcast.status === 'scheduled') && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-300"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="font-medium">Template not available for the connected WhatsApp account</p>
+            <p className="mt-0.5 text-xs text-amber-200/80">
+              The template &ldquo;{broadcast.template_name}&rdquo; is not available or not approved on the currently connected WhatsApp Business Account. This campaign cannot be sent until you pick a template from the current account.
+            </p>
+          </div>
+        </div>
+      )}
+
       {broadcast.status === 'scheduled' && (
         <div className="space-y-3 rounded-xl border border-blue-500/30 bg-blue-500/5 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">

@@ -34,23 +34,32 @@ vi.mock('@/lib/auth/account', () => ({
   requireRole: async () => ({
     accountId: h.state.accountId,
     supabase: {
-      from: () => {
+      from: (table: string) => {
         // Thenable query builder: each `.eq()` records its column/value so
         // the test can prove the tenant + status filters ran, and awaiting
         // the chain resolves the fixture rows.
         interface Chain {
           select: () => Chain
           eq: (column: string, value: unknown) => Chain
+          is: (column: string, value: unknown) => Chain
           order: () => Chain
+          maybeSingle: () => Promise<unknown>
           then: (resolve: (v: unknown) => unknown) => unknown
         }
         const chain: Chain = {
           select: () => chain,
           eq: (column: string, value: unknown) => {
-            h.state.filters.push({ column, value })
+            if (table === 'message_templates') {
+              h.state.filters.push({ column, value })
+            }
             return chain
           },
+          is: () => chain,
           order: () => chain,
+          maybeSingle: async () =>
+            table === 'whatsapp_config'
+              ? { data: { waba_id: 'waba-1' }, error: null }
+              : { data: null, error: null },
           then: (resolve: (v: unknown) => unknown) =>
             resolve({ data: h.state.rows, error: null }),
         }

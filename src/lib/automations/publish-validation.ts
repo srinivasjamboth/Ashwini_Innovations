@@ -74,11 +74,21 @@ export async function collectPublishIssues(opts: {
     // pointing at one must fail validation instead of silently failing
     // at send time.
     const carousels = new Set<string>()
-    if (names.length > 0) {
+    let wabaId: string | null = null
+    const { data: cfg } = await admin
+      .from('whatsapp_config')
+      .select('waba_id')
+      .eq('account_id', accountId)
+      .maybeSingle()
+    wabaId = (cfg as { waba_id?: string | null } | null)?.waba_id ?? null
+
+    if (names.length > 0 && wabaId) {
       const { data, error } = await admin
         .from('message_templates')
         .select('name, language, header_type')
         .eq('account_id', accountId)
+        .eq('waba_id', wabaId)
+        .is('removed_at', null)
         .eq('status', 'APPROVED')
         .in('name', names)
       if (error) throw new Error(error.message)
@@ -100,7 +110,9 @@ export async function collectPublishIssues(opts: {
       if (!hit) {
         issues.push({
           path: `nodes.${n.id}.template_name`,
-          message: `Template "${name}" (${lang}) is no longer approved and can't be sent`,
+          message: !wabaId
+            ? `Template "${name}" (${lang}) is not available — connect your WhatsApp Business account first`
+            : `Template "${name}" (${lang}) is not available or not approved for the connected WhatsApp account`,
           severity: 'error',
         })
       } else if (carousels.has(`${name}::${lang}`) || carousels.has(name)) {
